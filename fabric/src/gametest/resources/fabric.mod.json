@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "meridian_damage_test",
+  "version": "1.0.0",
+  "name": "Meridian Damage Integration Test",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"],
+    "meridian_health_host": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"]
+  }
+}

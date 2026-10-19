@@ -1,0 +1,52 @@
+plugins { id 'fabric-loom' }
+
+repositories { maven { url = 'https://maven.fabricmc.net/' } }
+dependencies {
+    minecraft 'com.mojang:minecraft:1.20.1'
+    mappings 'net.fabricmc:yarn:1.20.1+build.10:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.3+1.20.1'
+    implementation project(':server')
+    include project(':server')
+    include implementation('local.meridian:server')
+    include implementation('com.google.protobuf:protobuf-java:4.36.2')
+    include implementation('org.tomlj:tomlj:1.1.1')
+    include implementation('org.antlr:antlr4-runtime:4.11.1')
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand version: project.version }
+}
+
+loom {
+    mods {
+        meridian_vanilla_damage { sourceSet sourceSets.main }
+    }
+    runs {
+        server { runDir 'build/server' }
+    }
+}
+
+// 事件注入点必须在真实游戏类上验证；测试宿主与样例身体不进入发布 JAR。
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+        runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+    }
+}
+loom {
+    mods {
+        meridian_damage_test { sourceSet sourceSets.gametest }
+    }
+    runs {
+        gametest {
+            server()
+            name 'Damage GameTest'
+            source sourceSets.gametest
+            runDir 'build/gametest'
+            vmArg '-Dfabric-api.gametest'
+            vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
+        }
+    }
+}

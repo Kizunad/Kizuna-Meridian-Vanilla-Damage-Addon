@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        maven { url = 'https://maven.fabricmc.net/' }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'kizuna-meridian-vanilla-damage-addon'
+include 'server', 'fabric'
+
+// 本地替换键不代表已经发布的 Maven 坐标，协议始终从独立框架仓库生成。
+includeBuild(providers.gradleProperty('meridianFrameworkDir').getOrElse('../Kizuna-Meridian-Mod-Framework')) {
+    dependencySubstitution {
+        substitute module('local.meridian:server') using project(':server')
+    }
+}

@@ -1,0 +1,155 @@
+# 护甲前原版伤害 → 身体部位 HP，默认 1:1。修改后重启服务端生效。
+hp_per_vanilla_hp = 1.0
+
+# 每次命中部位的最终护甲减免比例上限，与 formula.effective_armor_cap 的护甲值单位不同。
+# 先算单件基础减免，乘耐久系数，再套此上限。默认值仅为可调占位参数。
+[armor]
+maximum_reduction_ratio = 0.60
+# [剩余耐久比例, 减免系数]，横坐标严格递增，段内线性插值；无耐久物品系数恒为 1。
+durability_curve = [[0.0, 0.0], [0.1, 0.35], [0.25, 0.6], [0.5, 0.85], [1.0, 1.0]]
+
+# D 为换算后的身体伤害，A/T 只取覆盖命中部位的单件装备，不放大其强度。
+# E = clamp(A - D / (base + T / toughness_divisor), min(A * minimum, cap), cap)
+# 基础减免比例 = E / reduction_divisor。以下默认系数对应原版护甲公式。
+[armor.formula]
+type = "toughness"
+damage_divisor_base = 2.0
+toughness_divisor = 4.0
+minimum_armor_fraction = 0.2
+# 有效护甲值的上限（护甲点数），不是最终减免百分比。
+effective_armor_cap = 20.0
+reduction_divisor = 25.0
+
+# 每个部位至多对应一个槽；前臂、手及新增未登记部位不受普通护甲覆盖。
+[armor.coverage."human:adult"]
+head = ["head", "neck"]
+chest = ["chest", "abdomen", "left_upper_arm", "right_upper_arm"]
+legs = ["pelvis", "left_thigh", "right_thigh", "left_lower_leg", "right_lower_leg"]
+feet = ["left_foot", "right_foot"]
+
+# 分组属于此原版适配的内容配置，不向 Framework 写入人体 ID。
+[anatomies."human:adult"]
+head = ["head"]
+torso = ["neck", "chest", "abdomen", "pelvis"]
+arms = ["left_upper_arm", "left_forearm", "left_hand", "right_upper_arm", "right_forearm", "right_hand"]
+legs = ["left_thigh", "left_lower_leg", "left_foot", "right_thigh", "right_lower_leg", "right_foot"]
+
+# 权重是一整组的份额，组内均分；缺失组会在实际可命中的组间归一化。
+[attackers."minecraft:spider"]
+head = 5
+torso = 15
+arms = 10
+legs = 70
+other = 5
+
+[attackers."minecraft:cave_spider"]
+head = 3
+torso = 12
+arms = 10
+legs = 75
+other = 5
+
+[attackers."minecraft:skeleton"]
+head = 30
+torso = 45
+arms = 20
+legs = 5
+other = 5
+
+[attackers."minecraft:stray"]
+head = 30
+torso = 45
+arms = 20
+legs = 5
+other = 5
+
+[attackers."minecraft:wither_skeleton"]
+head = 20
+torso = 50
+arms = 20
+legs = 10
+other = 5
+
+[attackers."minecraft:zombie"]
+head = 15
+torso = 45
+arms = 25
+legs = 15
+other = 5
+
+[attackers."minecraft:husk"]
+head = 15
+torso = 45
+arms = 25
+legs = 15
+other = 5
+
+[attackers."minecraft:drowned"]
+head = 15
+torso = 50
+arms = 20
+legs = 15
+other = 5
+
+[attackers."minecraft:slime"]
+head = 0
+torso = 15
+arms = 10
+legs = 75
+other = 5
+
+[attackers."minecraft:magma_cube"]
+head = 0
+torso = 15
+arms = 10
+legs = 75
+other = 5
+
+[attackers."minecraft:silverfish"]
+head = 0
+torso = 5
+arms = 5
+legs = 90
+other = 5
+
+[attackers."minecraft:endermite"]
+head = 0
+torso = 5
+arms = 5
+legs = 90
+other = 5
+
+[attackers."minecraft:wolf"]
+head = 5
+torso = 20
+arms = 20
+legs = 55
+other = 5
+
+[attackers."minecraft:phantom"]
+head = 45
+torso = 35
+arms = 15
+legs = 5
+other = 5
+
+[attackers."minecraft:enderman"]
+head = 20
+torso = 55
+arms = 20
+legs = 5
+other = 5
+
+[attackers."minecraft:iron_golem"]
+head = 20
+torso = 55
+arms = 15
+legs = 10
+other = 5
+
+[attackers."minecraft:ravager"]
+head = 10
+torso = 60
+arms = 15
+legs = 15
+other = 5
