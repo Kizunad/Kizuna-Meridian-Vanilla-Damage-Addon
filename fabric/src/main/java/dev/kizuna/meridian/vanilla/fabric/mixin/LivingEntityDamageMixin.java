@@ -45,8 +45,10 @@ public abstract class LivingEntityDamageMixin {
     private void meridian$recordFinalLoss(LivingEntity entity, float requestedHealth, DamageSource source, float amount) {
         // 身体接收完整结算剂量，原版血条的归零钳制不能截断高于剩余血量的伤害。
         float previousHealth = entity.getHealth();
-        entity.setHealth(requestedHealth);
-        VanillaDamageFabric.applyBodyDamage(entity, source, Math.max(0, previousHealth - requestedHealth));
+        boolean integrated = VanillaDamageFabric.applyBodyDamage(entity, source, Math.max(0, previousHealth - requestedHealth));
+        if (!integrated) {
+            entity.setHealth(requestedHealth);
+        }
     }
 
     @Inject(method = "damage", at = @At("RETURN"))

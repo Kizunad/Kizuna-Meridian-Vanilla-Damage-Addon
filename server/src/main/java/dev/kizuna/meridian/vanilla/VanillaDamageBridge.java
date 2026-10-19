@@ -1,6 +1,11 @@
 package dev.kizuna.meridian.vanilla;
 
 import dev.kizuna.meridian.protocol.HealthHostProtobuf;
+import dev.kizuna.meridian.protocol.HealthProtobuf;
+import dev.kizuna.meridian.protocol.DamageIntegrationProtobuf;
+import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationContext;
+import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationPlan;
+import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationCommit;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostRequest;
@@ -11,6 +16,7 @@ import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.RequestEnvelope;
 import dev.kizuna.meridian.server.BodyHealthHost;
+import dev.kizuna.meridian.server.BodyDamageIntegration;
 
 import java.util.List;
 import java.util.Optional;
@@ -21,11 +27,19 @@ import java.util.UUID;
 public final class VanillaDamageBridge {
     private final List<BodyHealthHost> hosts;
     private final DamagePreferences preferences;
+    private final List<BodyDamageIntegration> integrations;
 
     public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences) {
         // 服务发现由运行环境完成，纯规则层不引用 Minecraft 或具体生物包。
+        this(hosts, preferences, List.of());
+    }
+
+    public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences,
+                               List<BodyDamageIntegration> integrations) {
+        // 可选效果只调整已固定命中的剂量，身体仍由原宿主进行一次权威提交。
         this.hosts = List.copyOf(hosts);
         this.preferences = preferences;
+        this.integrations = List.copyOf(integrations);
     }
 
     public Optional<BodySnapshot> damage(String subjectId, String sourceId, String attackerId,
@@ -88,6 +102,11 @@ public final class VanillaDamageBridge {
 
         public BodySnapshot commit(double damageAfterEffects) {
             // 真正的 HP 变更只在非护甲机制结算后提交，避免吸收挡住仍留下局部伤势。
+            return commitIntegrated(damageAfterEffects, false).body();
+        }
+
+        public CommitResult commitIntegrated(double damageAfterEffects, boolean bypassesDeathProtection) {
+            // 固定伤害上下文后询问效果附属；纯方案失败时不能预先消费黄心或图腾。
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
             }
@@ -95,11 +114,52 @@ public final class VanillaDamageBridge {
                     .setDamageType(sourceId).setKind(kind)
                     .setDamageHp(preferences.damageHp(damageAfterEffects));
             target.ifPresent(damage::setHit);
+            BodyDamageIntegration selected = null;
+            DamageIntegrationPlan plan = null;
+            var context = DamageIntegrationContext.newBuilder().setSubjectId(subjectId).setBody(binding.body())
+                    .setDamage(damage).setBypassesDeathProtection(bypassesDeathProtection).build();
+            if (damage.hasHit()) {
+                for (BodyDamageIntegration integration : integrations) {
+                    var candidate = DamageIntegrationProtobuf.decodePlan(integration.prepare(
+                            DamageIntegrationProtobuf.encodeContext(context)));
+                    if (!candidate.getHandled()) {
+                        continue;
+                    }
+                    if (selected != null || candidate.getRemainingDamageHp() > damage.getDamageHp()
+                            || (bypassesDeathProtection && candidate.hasDeathProtection())) {
+                        throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+                    }
+                    selected = integration;
+                    plan = candidate;
+                }
+            }
             // 宿主响应不确定时也不从此临时上下文重发，避免给同一事件换一个请求身份。
             committed = true;
-            return apply(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage));
+            if (selected == null) {
+                return new CommitResult(apply(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage)), false, false);
+            }
+
+            BodySnapshot body = binding.body();
+            boolean deathPrevented = false;
+            if (plan.getRemainingDamageHp() > 0) {
+                damage.setDamageHp(plan.getRemainingDamageHp());
+                if (plan.hasDeathProtection()) {
+                    damage.setDeathProtection(plan.getDeathProtection());
+                }
+                var response = applyResponse(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage));
+                if (!response.hasHealth()) {
+                    throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+                }
+                body = response.getBody();
+                deathPrevented = response.getHealth().getDeathPrevented();
+            }
+            selected.committed(DamageIntegrationProtobuf.encodeCommit(DamageIntegrationCommit.newBuilder()
+                    .setContext(context).setPlan(plan).setBody(body).setDeathPrevented(deathPrevented).build()));
+            return new CommitResult(body, true, deathPrevented);
         }
     }
+
+    public record CommitResult(BodySnapshot body, boolean integrated, boolean deathPrevented) { }
 
     public Optional<BodySnapshot> died(String subjectId) {
         // 原版死亡只确认死态，不用虚构的大额伤害覆盖已有局部伤势。
@@ -135,6 +195,11 @@ public final class VanillaDamageBridge {
 
     private BodySnapshot apply(String subjectId, Binding binding, BodyCommand.Builder command) {
         // 同一事件只提交一次，失败不重新抽取目标；请求身份和读取版本固定在本次提交。
+        return applyResponse(subjectId, binding, command).getBody();
+    }
+
+    private HealthHostResponse applyResponse(String subjectId, Binding binding, BodyCommand.Builder command) {
+        // 保命事实来自已提交回执，不能用扣血后的可见比例猜测是否消费图腾。
         String requestId = UUID.randomUUID().toString();
         var effect = RequestEnvelope.newBuilder().setProtocolVersion(1).setRequestId(requestId)
                 .setBodyCommand(command.setBodyId(binding.body().getId())
@@ -145,7 +210,11 @@ public final class VanillaDamageBridge {
         if (!response.hasBody() || !response.getBody().getId().equals(binding.body().getId())) {
             throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HOST_RESPONSE);
         }
-        return response.getBody();
+        if (response.hasHealth()) {
+            // 保命消费必须依据与本次命令一致的固定事实，不能接受错配的治疗或死亡回执。
+            HealthProtobuf.validateResult(effect.getBodyCommand(), response.getHealth());
+        }
+        return response;
     }
 
     private HealthHostResponse exchange(BodyHealthHost host, HealthHostRequest request) {

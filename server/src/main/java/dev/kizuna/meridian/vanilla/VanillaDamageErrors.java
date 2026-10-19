@@ -4,6 +4,7 @@ import java.io.IOException;
 
 /** 原版伤害适配的诊断；核心失败仍使用 Protobuf 失败码。 */
 public final class VanillaDamageErrors {
+    public static final String INVALID_INTEGRATION = "伤害效果集成认领重复、方案无效或宿主缺少健康回执";
     public static final String CONFIG = "原版伤害配置无效";
     public static final String CONFIG_IO = "无法读取或创建原版伤害配置";
     public static final String HOST_RESPONSE = "健康宿主返回了不匹配的响应或丢失了身体绑定";

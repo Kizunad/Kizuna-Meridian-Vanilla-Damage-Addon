@@ -32,6 +32,8 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 死亡通过 `confirm_body_death` 确认；它不生成伪造的大额伤害，不覆盖局部 HP。身体、释放账户和回执的保存仍属于宿主唯一状态，本附属不另存一套身体。
 
+可选效果附属注册 `meridian_damage_integration`，实现 Framework `BodyDamageIntegration` 的 Protobuf 准备与提交通知。`PreparedHit.commitIntegrated` 在固定命中后读取只减伤的方案，将受保护的剩余伤害提交到同一宿主；效果成功响应必须附带同请求固定 `HealthResult`，其格式和命令一致性经框架校验后才消费图腾。无集成时保留原路径；完全局部吸收无需 HP 事务。原版治疗与局部黄心由独立 Vanilla Healing Addon 提供，详见[伤害规则](Damage-Rules.md)。
+
 ## 验证范围与失败行为
 
 必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。Fabric GameTest 在真实 Minecraft 服务端验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品 NBT 属性、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。

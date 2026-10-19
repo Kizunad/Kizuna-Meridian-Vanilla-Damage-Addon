@@ -1,6 +1,8 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.server.BodyHealthHost;
+import dev.kizuna.meridian.server.BodyDamageIntegration;
+import dev.kizuna.meridian.vanilla.fabric.mixin.TotemAccess;
 import dev.kizuna.meridian.vanilla.ArmorRules;
 import dev.kizuna.meridian.vanilla.DamagePreferences;
 import dev.kizuna.meridian.vanilla.VanillaDamageBridge;
@@ -46,7 +48,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         var hosts = FabricLoader.getInstance().getEntrypoints("meridian_health_host", BodyHealthHost.class);
         var preferences = DamagePreferences.load(FabricLoader.getInstance().getConfigDir()
                 .resolve("meridian-vanilla-damage.toml"));
-        bridge = new VanillaDamageBridge(hosts, preferences);
+        var integrations = FabricLoader.getInstance().getEntrypoints("meridian_damage_integration", BodyDamageIntegration.class);
+        bridge = new VanillaDamageBridge(hosts, preferences, integrations);
         if (hosts.isEmpty()) {
             LOGGER.warn(VanillaDamageErrors.NO_HOST);
         }
@@ -141,21 +144,29 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
     }
 
-    public static void applyBodyDamage(LivingEntity entity, DamageSource source, float damageAfterEffects) {
+    public static boolean applyBodyDamage(LivingEntity entity, DamageSource source, float damageAfterEffects) {
         // 这里收到局部护甲、抗性、附魔和吸收之后的剂量，命中部位不能再随机一次。
         Deque<DamageFrame> frames = applications.get(entity);
         if (frames == null || frames.peek().hit == null || damageAfterEffects <= 0) {
-            return;
+            return false;
         }
         try {
-            var body = frames.peek().hit.commit(damageAfterEffects);
+            var result = frames.peek().hit.commitIntegrated(damageAfterEffects,
+                    source.isIn(DamageTypeTags.BYPASSES_INVULNERABILITY));
+            var body = result.body();
+            if (result.deathPrevented()) {
+                // 身体尚未死亡及清账；随后复用原版扣物品、统计、音画与效果授予流程。
+                ((TotemAccess) entity).meridian$tryUseTotem(source);
+            }
             if (body.getVitality().getDead()) {
                 // 等原版伤害调用结束后再同步死亡，避免在 applyDamage 中途重入 onDeath。
                 pendingDeaths.put(entity, source);
             }
+            return result.integrated();
         } catch (RuntimeException failure) {
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
                     + " hpAfterEffects=" + damageAfterEffects, failure);
+            return false;
         }
     }
 

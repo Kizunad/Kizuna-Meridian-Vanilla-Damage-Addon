@@ -27,7 +27,9 @@ public abstract class PlayerEntityDamageMixin {
     private void meridian$recordPlayerLoss(PlayerEntity player, float requestedHealth, DamageSource source, float amount) {
         // 玩家重写了 applyDamage，必须单独接入；该路径不会再调用 LivingEntity 的实现。
         float previousHealth = player.getHealth();
-        player.setHealth(requestedHealth);
-        VanillaDamageFabric.applyBodyDamage(player, source, Math.max(0, previousHealth - requestedHealth));
+        boolean integrated = VanillaDamageFabric.applyBodyDamage(player, source, Math.max(0, previousHealth - requestedHealth));
+        if (!integrated) {
+            player.setHealth(requestedHealth);
+        }
     }
 }

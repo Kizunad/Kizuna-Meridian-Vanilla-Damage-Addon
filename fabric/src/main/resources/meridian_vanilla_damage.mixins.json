@@ -2,6 +2,6 @@
   "required": true,
   "package": "dev.kizuna.meridian.vanilla.fabric.mixin",
   "compatibilityLevel": "JAVA_17",
-  "mixins": ["LivingEntityDamageMixin", "PlayerEntityDamageMixin"],
+  "mixins": ["LivingEntityDamageMixin", "PlayerEntityDamageMixin", "TotemAccess"],
   "injectors": {"defaultRequire": 1}
 }
