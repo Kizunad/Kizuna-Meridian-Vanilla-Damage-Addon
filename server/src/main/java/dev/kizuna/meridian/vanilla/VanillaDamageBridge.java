@@ -29,17 +29,18 @@ public final class VanillaDamageBridge {
     private final DamagePreferences preferences;
     private final List<BodyDamageIntegration> integrations;
 
-    public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences) {
-        // 服务发现由运行环境完成，纯规则层不引用 Minecraft 或具体生物包。
-        this(hosts, preferences, List.of());
-    }
-
     public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences,
                                List<BodyDamageIntegration> integrations) {
-        // 可选效果只调整已固定命中的剂量，身体仍由原宿主进行一次权威提交。
+        // 整套运行必须提供身体宿主和效果集成；未绑定实体由查询结果单独表达。
         this.hosts = List.copyOf(hosts);
         this.preferences = preferences;
         this.integrations = List.copyOf(integrations);
+        if (this.hosts.isEmpty()) {
+            throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_HOST);
+        }
+        if (this.integrations.isEmpty()) {
+            throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_INTEGRATION);
+        }
     }
 
     public Optional<BodySnapshot> damage(String subjectId, String sourceId, String attackerId,
@@ -114,6 +115,11 @@ public final class VanillaDamageBridge {
                     .setDamageType(sourceId).setKind(kind)
                     .setDamageHp(preferences.damageHp(damageAfterEffects));
             target.ifPresent(damage::setHit);
+            if (!damage.hasHit()) {
+                // 无存活目标是身体状态；交由核心验证，不将其当作缺少集成。
+                committed = true;
+                return new CommitResult(apply(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage)), false);
+            }
             BodyDamageIntegration selected = null;
             DamageIntegrationPlan plan = null;
             var context = DamageIntegrationContext.newBuilder().setSubjectId(subjectId).setBody(binding.body())
@@ -136,7 +142,7 @@ public final class VanillaDamageBridge {
             // 宿主响应不确定时也不从此临时上下文重发，避免给同一事件换一个请求身份。
             committed = true;
             if (selected == null) {
-                return new CommitResult(apply(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage)), false, false);
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_INTEGRATION);
             }
 
             BodySnapshot body = binding.body();
@@ -155,11 +161,11 @@ public final class VanillaDamageBridge {
             }
             selected.committed(DamageIntegrationProtobuf.encodeCommit(DamageIntegrationCommit.newBuilder()
                     .setContext(context).setPlan(plan).setBody(body).setDeathPrevented(deathPrevented).build()));
-            return new CommitResult(body, true, deathPrevented);
+            return new CommitResult(body, deathPrevented);
         }
     }
 
-    public record CommitResult(BodySnapshot body, boolean integrated, boolean deathPrevented) { }
+    public record CommitResult(BodySnapshot body, boolean deathPrevented) { }
 
     public Optional<BodySnapshot> died(String subjectId) {
         // 原版死亡只确认死态，不用虚构的大额伤害覆盖已有局部伤势。

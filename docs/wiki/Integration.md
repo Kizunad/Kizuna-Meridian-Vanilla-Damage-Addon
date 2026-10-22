@@ -12,7 +12,7 @@ python3 scripts/check_docs.py
 
 安装使用 `fabric/build/libs/` 内不带 `sources` 或 `dev` 后缀的重映射 JAR，并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。模组本身运行在服务端，单机由集成服务器执行，不要求客户端安装伤害适配。
 
-本附属不创建身体。玩家身体可由独立 Human Addon 提供；没有管理该实体的宿主时保留原版行为。它不依赖 Human 内部类，其他生物附属采用相同接口。
+本附属不创建身体，玩家身体由必装 Human Addon 提供。八仓按适用端整套安装，开发运行统一应用 Framework 的 `scripts/full-assembly.gradle`。健康宿主和伤害效果集成都必须装配，缺接线启动报错；所有宿主明确返回该实体未绑定时才保留原版行为。本包不依赖 Human 内部类，其他生物附属采用相同接口。
 
 ## 可信 Protobuf 入口
 
@@ -32,10 +32,10 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 死亡通过 `confirm_body_death` 确认；它不生成伪造的大额伤害，不覆盖局部 HP。身体、释放账户和回执的保存仍属于宿主唯一状态，本附属不另存一套身体。
 
-可选效果附属注册 `meridian_damage_integration`，实现 Framework `BodyDamageIntegration` 的 Protobuf 准备与提交通知。`PreparedHit.commitIntegrated` 在固定命中后读取只减伤的方案，将受保护的剩余伤害提交到同一宿主；效果成功响应必须附带同请求固定 `HealthResult`，其格式和命令一致性经框架校验后才消费图腾。无集成时保留原路径；完全局部吸收无需 HP 事务。原版治疗与局部黄心由独立 Vanilla Healing Addon 提供，详见[伤害规则](Damage-Rules.md)。
+必装 Vanilla Healing 注册 `meridian_damage_integration`，实现 Framework `BodyDamageIntegration` 的 Protobuf 准备与提交通知。`PreparedHit.commitIntegrated` 在固定命中后读取只减伤的方案，将受保护的剩余伤害提交到同一宿主；效果成功响应必须附带同请求固定 `HealthResult`，其格式和命令一致性经框架校验后才消费图腾。已绑定的命中必须由唯一效果集成认领，没有认领直接报错；完全局部吸收无需 HP 事务。原版治疗与局部黄心详见[伤害规则](Damage-Rules.md)。
 
 ## 验证范围与失败行为
 
 必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。Fabric GameTest 在真实 Minecraft 服务端验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品 NBT 属性、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。
 
-Minecraft 实体状态与身体 Store 之间目前没有跨系统持久化事务。同步失败保留原版结算并记录日志，不宣称可靠补偿或恰好一次世界副作用；框架内部的身体变更与成功回执仍为原子提交。Windows 手动游玩、专服多人及其他战斗模组兼容需要独立验收。
+Minecraft 实体状态与身体 Store 之间目前没有跨系统持久化事务。同步失败记录日志并抛错，不继续原版扣血，不宣称可靠补偿或恰好一次世界副作用；框架内部的身体变更与成功回执仍为原子提交。Windows 手动游玩、专服多人及其他战斗模组兼容需要独立验收。

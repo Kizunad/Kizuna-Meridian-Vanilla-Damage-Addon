@@ -3,6 +3,9 @@ package dev.kizuna.meridian.vanilla;
 import dev.kizuna.meridian.core.*;
 import dev.kizuna.meridian.protocol.BodyProtobuf;
 import dev.kizuna.meridian.protocol.HealthHostProtobuf;
+import dev.kizuna.meridian.protocol.DamageIntegrationProtobuf;
+import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationPlan;
+import dev.kizuna.meridian.server.BodyDamageIntegration;
 import dev.kizuna.meridian.protocol.MeridianProtocol;
 import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostResponse;
@@ -73,7 +76,7 @@ public class VanillaDamageTest {
         var store = new InMemoryBodyStore(List.of(body()), List.of());
         var calls = new AtomicInteger();
         BodyHealthHost host = host(store, calls);
-        var bridge = new VanillaDamageBridge(List.of(host), preferences());
+        var bridge = new VanillaDamageBridge(List.of(host), preferences(), List.of(effects()));
         assertTrue(bridge.damage("subject", "minecraft:arrow", "minecraft:skeleton", DamageKind.PIERCING, 0, 0).isEmpty());
         assertEquals(0, calls.get());
         var hit = bridge.prepare("subject", "minecraft:arrow", "minecraft:skeleton", DamageKind.PIERCING, 0).orElseThrow();
@@ -84,7 +87,7 @@ public class VanillaDamageTest {
         assertEquals(1, store.receipts().size());
         assertThrows(IllegalStateException.class, () -> hit.commit(2));
 
-        var duplicated = new VanillaDamageBridge(List.of(host, host), preferences());
+        var duplicated = new VanillaDamageBridge(List.of(host, host), preferences(), List.of(effects()));
         assertThrows(IllegalStateException.class, () -> duplicated.damage("subject", "minecraft:arrow",
                 "minecraft:skeleton", DamageKind.PIERCING, 2, 0));
         assertEquals(1, store.receipts().size());
@@ -106,7 +109,7 @@ public class VanillaDamageTest {
                             .setCode(FailureCode.ACCESS_DENIED)).build());
         };
         int before = calls.get();
-        var denied = new VanillaDamageBridge(List.of(rejected, host), preferences());
+        var denied = new VanillaDamageBridge(List.of(rejected, host), preferences(), List.of(effects()));
         assertThrows(IllegalStateException.class, () -> denied.died("subject"));
         assertEquals(before, calls.get());
         assertTrue(bridge.died("unbound").isEmpty());
@@ -128,14 +131,14 @@ public class VanillaDamageTest {
         assertTrue(armor.remainingDamage(12, 8, 2, OptionalDouble.of(1))
                 < armor.remainingDamage(12, 8, 0, OptionalDouble.of(1)));
 
-        // 修改同一公式参数和覆盖表便能改变结算；不需改源码或安装人体包。
+        // 修改同一公式参数和覆盖表便能改变结算；不需修改源码。
         String config = configuration().replace("hp_per_vanilla_hp = 1.0", "hp_per_vanilla_hp = 2.0")
                 .replace("reduction_divisor = 25.0", "reduction_divisor = 50.0")
                 .replace("head = [\"head\", \"neck\"]", "head = [\"head\", \"neck\", \"left_forearm\"]");
         DamagePreferences changed = DamagePreferences.parse(config);
         assertEquals(ArmorRules.Slot.HEAD, changed.armor().coveredSlot("human:adult", "left_forearm").orElseThrow());
         var store = new InMemoryBodyStore(List.of(body()), List.of());
-        var bridge = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), changed);
+        var bridge = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), changed, List.of(effects()));
         var hit = bridge.prepare("subject", "minecraft:arrow", "minecraft:skeleton", DamageKind.PIERCING, 0).orElseThrow();
         double remaining = hit.remainingVanillaDamage(4, 8, 2, OptionalDouble.of(1));
         assertEquals(3.616, remaining, 1e-12);
@@ -202,6 +205,23 @@ public class VanillaDamageTest {
         }
     }
 
+    private static BodyDamageIntegration effects() {
+        // 纯协议回归显式装配效果端点；本样例没有黄心和图腾，仍确认同一提交事实。
+        return new BodyDamageIntegration() {
+            public byte[] prepare(byte[] payload) {
+                // 效果为空是合法状态，不代表没有安装集成。
+                var context = DamageIntegrationProtobuf.decodeContext(payload);
+                return DamageIntegrationProtobuf.encodePlan(DamageIntegrationPlan.newBuilder().setHandled(true)
+                        .setRemainingDamageHp(context.getDamage().getDamageHp()).build());
+            }
+
+            public void committed(byte[] payload) {
+                // 消费方按正式契约验证核心提交后的通知。
+                DamageIntegrationProtobuf.decodeCommit(payload);
+            }
+        };
+    }
+
     private static BodyHealthHost host(InMemoryBodyStore store, AtomicInteger calls) {
         // 正式处理器负责 HP 和幂等；测试宿主仅模拟服务端身份绑定和已结算时钟。
         var handler = new BodyCommandHandler<String>((caller, command) -> Optional.of(caller),
@@ -222,6 +242,11 @@ public class VanillaDamageTest {
                 if (effect.hasFailure()) {
                     return HealthHostProtobuf.encodeResponse(response.setFailure(effect.getFailure()).build());
                 }
+                store.transact(new BodyId("body"), transaction -> {
+                    // 效果集成需要本请求的健康事实，不能仅凭提交后的 HP 推断。
+                    response.setHealth(transaction.receipt("host", request.getRequestId()).orElseThrow().getHealth());
+                    return null;
+                });
             }
             return HealthHostProtobuf.encodeResponse(response.setBody(BodyProtobuf.toMessage(
                     store.find(new BodyId("body")).orElseThrow())).build());
@@ -233,7 +258,7 @@ public class VanillaDamageTest {
         var parts = List.of("head", "chest", "left_thigh", "right_thigh").stream()
                 .map(id -> new Anatomy.PartDefinition(new Anatomy.PartId(id), id, 20)).toList();
         var structure = new BodyStructure(parts, List.of(), List.of(), List.of(), List.of());
-        return new BodySnapshot(2, new BodyId("body"),
+        return new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION, new BodyId("body"),
                 new BodyTemplate.Reference(new DefinitionId("human:adult"), 1), structure, Realm.WANDERING_QI,
                 parts.stream().map(part -> new AnatomyState.Part(part.id(), 20)).toList(),
                 List.of(), List.of(), List.of(), List.of(), new VitalityState(0, 1000, 0, false),

@@ -50,9 +50,6 @@ public final class VanillaDamageFabric implements ModInitializer {
                 .resolve("meridian-vanilla-damage.toml"));
         var integrations = FabricLoader.getInstance().getEntrypoints("meridian_damage_integration", BodyDamageIntegration.class);
         bridge = new VanillaDamageBridge(hosts, preferences, integrations);
-        if (hosts.isEmpty()) {
-            LOGGER.warn(VanillaDamageErrors.NO_HOST);
-        }
         ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> confirmDeath(entity));
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
             // 服务器生命周期结束后不持有旧实体与未完成调用的临时引用。
@@ -63,7 +60,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     public static void beginApplication(LivingEntity entity) {
         // 每层 applyDamage 持有自己的命中；嵌套伤害不能覆盖外层已选定的部位。
-        if (entity.getWorld().isClient || bridge == null) {
+        if (entity.getWorld().isClient) {
             return;
         }
         applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>()).push(new DamageFrame());
@@ -137,10 +134,10 @@ public final class VanillaDamageFabric implements ModInitializer {
             frames.peek().hit = hit;
             return Optional.of(remainingDamage);
         } catch (RuntimeException failure) {
-            // 选点或宿主校验失败时没有身体提交，保留原版路径并记录本次输入。
+            // 必需接线失败不能改走原版 HP；记录上下文后向调用方暴露错误。
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
                     + " source=" + sourceId + " rawHp=" + rawDamage, failure);
-            return Optional.empty();
+            throw failure;
         }
     }
 
@@ -162,11 +159,11 @@ public final class VanillaDamageFabric implements ModInitializer {
                 // 等原版伤害调用结束后再同步死亡，避免在 applyDamage 中途重入 onDeath。
                 pendingDeaths.put(entity, source);
             }
-            return result.integrated();
+            return true;
         } catch (RuntimeException failure) {
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
                     + " hpAfterEffects=" + damageAfterEffects, failure);
-            return false;
+            throw failure;
         }
     }
 
@@ -191,7 +188,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static void confirmDeath(LivingEntity entity) {
         // 外部死亡保留当前局部 HP，重生也不自动治疗或生成一具新身体。
-        if (bridge == null || entity.getWorld().isClient) {
+        if (entity.getWorld().isClient) {
             return;
         }
         pendingDeaths.remove(entity);
@@ -199,6 +196,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             bridge.died(entity.getUuidAsString());
         } catch (RuntimeException failure) {
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString(), failure);
+            throw failure;
         }
     }
 

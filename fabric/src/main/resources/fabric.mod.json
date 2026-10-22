@@ -9,6 +9,6 @@
   "environment": "*",
   "entrypoints": {"main": ["dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric"]},
   "mixins": ["meridian_vanilla_damage.mixins.json"],
-  "depends": {"java": ">=17", "minecraft": "1.20.1", "fabricloader": ">=0.16.10", "fabric-api": "*"},
-  "suggests": {"meridian_human_host": "*"}
+  "depends": {"java": ">=17", "minecraft": "1.20.1", "fabricloader": ">=0.16.10", "fabric-api": "*",
+    "meridian_human_host": "*", "meridian_vanilla_healing": "*"}
 }

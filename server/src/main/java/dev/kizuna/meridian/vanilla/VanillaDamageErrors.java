@@ -8,9 +8,10 @@ public final class VanillaDamageErrors {
     public static final String CONFIG = "原版伤害配置无效";
     public static final String CONFIG_IO = "无法读取或创建原版伤害配置";
     public static final String HOST_RESPONSE = "健康宿主返回了不匹配的响应或丢失了身体绑定";
-    public static final String DAMAGE_FAILED = "原版伤害或死亡未能同步到身体，原版结算已保留";
+    public static final String DAMAGE_FAILED = "原版伤害或死亡未能同步到身体";
     public static final String DUPLICATE_HOST = "同一实体被多个身体宿主认领，已拒绝伤害同步";
-    public static final String NO_HOST = "未发现 meridian_health_host，原版战斗继续运行，身体伤害接线未启用";
+    public static final String NO_HOST = "缺少必需的 meridian_health_host 身体宿主";
+    public static final String NO_INTEGRATION = "缺少认领本次身体伤害的必需效果集成";
     public static final String DEFAULT_RESOURCE = "缺少默认配置资源";
     public static final String SCALE = "hp_per_vanilla_hp 必须是 (0, 1000] 内的数值";
     public static final String ANATOMIES = "anatomies 必须是表";
