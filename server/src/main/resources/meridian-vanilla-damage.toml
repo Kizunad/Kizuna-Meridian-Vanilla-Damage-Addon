@@ -153,3 +153,38 @@ torso = 60
 arms = 15
 legs = 15
 other = 5
+
+[attackers."minecraft:pillager"]
+head = 30
+torso = 45
+arms = 20
+legs = 5
+other = 5
+
+[attackers."minecraft:vindicator"]
+head = 20
+torso = 50
+arms = 25
+legs = 5
+other = 5
+
+[attackers."minecraft:evoker"]
+head = 5
+torso = 15
+arms = 5
+legs = 75
+other = 5
+
+[attackers."minecraft:illusioner"]
+head = 30
+torso = 45
+arms = 20
+legs = 5
+other = 5
+
+[attackers."minecraft:witch"]
+head = 25
+torso = 35
+arms = 20
+legs = 20
+other = 5

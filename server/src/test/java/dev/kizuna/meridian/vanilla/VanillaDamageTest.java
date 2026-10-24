@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.*;
@@ -39,6 +40,31 @@ public class VanillaDamageTest {
         assertEquals("head", preferences.select(body, "minecraft:skeleton", 0).orElseThrow().getPartId());
         assertEquals("right_thigh", preferences.select(body, "minecraft:spider", Math.nextDown(1.0))
                 .orElseThrow().getPartId());
+
+        // 新增生人配置使用整组权重；抽样结果应在合理统计误差内落到预期组。
+        for (String attacker : List.of("minecraft:pillager", "minecraft:vindicator", "minecraft:evoker",
+                "minecraft:illusioner", "minecraft:witch")) {
+            var configuredWeights = preferences.weights(body, attacker);
+            var random = new Random(attacker.hashCode());
+            int torsoHits = 0;
+            int headHits = 0;
+            int legHits = 0;
+            for (int sample = 0; sample < 10_000; sample++) {
+                String part = preferences.select(body, attacker, random.nextDouble()).orElseThrow().getPartId();
+                switch (part) {
+                    case "head" -> headHits++;
+                    case "chest" -> torsoHits++;
+                    case "left_thigh", "right_thigh" -> legHits++;
+                    default -> fail("样本落入未预期部位: " + part);
+                }
+            }
+            double total = configuredWeights.values().stream().mapToDouble(Double::doubleValue).sum();
+            assertEquals(configuredWeights.getOrDefault("head", 0.0) / total, headHits / 10_000.0, 0.02);
+            assertEquals(configuredWeights.getOrDefault("chest", 0.0) / total, torsoHits / 10_000.0, 0.02);
+            double legs = configuredWeights.getOrDefault("left_thigh", 0.0)
+                    + configuredWeights.getOrDefault("right_thigh", 0.0);
+            assertEquals(legs / total, legHits / 10_000.0, 0.02);
+        }
 
         var injured = body.toBuilder().setPartStates(2, body.getPartStates(2).toBuilder().setHp(0)).build();
         assertFalse(preferences.weights(injured, "minecraft:spider").containsKey("left_thigh"));
