@@ -24,14 +24,19 @@ public final class DamagePreferences {
     private final Map<String, Map<String, List<String>>> anatomies;
     private final Map<String, Map<String, Double>> attackers;
     private final ArmorRules armor;
+    private final boolean attackEffectsEnabled;
+    private final double maxExtraRatio;
 
     private DamagePreferences(double hpPerVanillaHp, Map<String, Map<String, List<String>>> anatomies,
-                              Map<String, Map<String, Double>> attackers, ArmorRules armor) {
+                              Map<String, Map<String, Double>> attackers, ArmorRules armor,
+                              boolean attackEffectsEnabled, double maxExtraRatio) {
         // 配置在启动时固定，实际选点仍按每次伤害时的身体模块与 HP 计算。
         this.hpPerVanillaHp = hpPerVanillaHp;
         this.anatomies = Map.copyOf(anatomies);
         this.attackers = Map.copyOf(attackers);
         this.armor = armor;
+        this.attackEffectsEnabled = attackEffectsEnabled;
+        this.maxExtraRatio = maxExtraRatio;
     }
 
     public static DamagePreferences load(Path path) {
@@ -140,12 +145,50 @@ public final class DamagePreferences {
         if (!(armorValue instanceof TomlTable armorTable)) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ARMOR_COVERAGE);
         }
-        return new DamagePreferences(scale, anatomies, attackers, ArmorRules.parse(armorTable));
+
+        // 附效配置缺省时读取内置默认值，已有服务器配置无需被启动时重写。
+        Object attackEffectsValue = config.get("attack_effects");
+        if (attackEffectsValue == null) {
+            try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
+                if (input == null) {
+                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
+                }
+                attackEffectsValue = Toml.parse(input).getTable("attack_effects");
+            } catch (IOException failure) {
+                throw VanillaDamageErrors.configReadFailed(failure);
+            }
+        }
+        if (!(attackEffectsValue instanceof TomlTable attackEffects)) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS);
+        }
+        Object enabledValue = attackEffects.get("enabled");
+        if (!(enabledValue instanceof Boolean enabled)) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_ENABLED);
+        }
+        Object ratioValue = attackEffects.get("max_extra_ratio");
+        if (!(ratioValue instanceof Number ratioNumber)) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_RATIO);
+        }
+        double maxExtraRatio = ratioNumber.doubleValue();
+        if (!Double.isFinite(maxExtraRatio) || maxExtraRatio < 0 || maxExtraRatio > 1000) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_RATIO);
+        }
+        return new DamagePreferences(scale, anatomies, attackers, ArmorRules.parse(armorTable), enabled, maxExtraRatio);
     }
 
     public ArmorRules armor() {
         // 纯规则与宿主装备读取分离，整体回归可直接验证配置后的公式。
         return armor;
+    }
+
+    public boolean attackEffectsEnabled() {
+        // 附效是可选增益；关闭时不查询攻击者身体，也不调用任何提供方。
+        return attackEffectsEnabled;
+    }
+
+    public double maxExtraRatio() {
+        // 上限以原版护甲前剂量为基准，避免提供方通过大数放大一次命中。
+        return maxExtraRatio;
     }
 
     public double damageHp(double vanillaHp) {

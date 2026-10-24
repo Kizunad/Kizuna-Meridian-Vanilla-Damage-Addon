@@ -31,6 +31,13 @@ public final class VanillaDamageErrors {
     public static final String ARMOR_DURABILITY_CURVE = "armor.durability_curve 至少需要两个 [剩余耐久比例, 系数] 点，数值须在 [0, 1]，耐久严格递增并覆盖 0 到 1，系数不得递减";
     public static final String ARMOR_DURABILITY_INPUT = "剩余耐久比例必须是 [0, 1] 内的有限数";
     public static final String HIT_COMMITTED = "同一次命中已经提交，不能重复结算";
+    public static final String ATTACK_EFFECTS = "attack_effects 必须是表";
+    public static final String ATTACK_EFFECTS_ENABLED = "attack_effects.enabled 必须是布尔值";
+    public static final String ATTACK_EFFECTS_RATIO = "attack_effects.max_extra_ratio 必须是 [0, 1000] 内的有限数";
+    public static final String ATTACK_EFFECT_CONTEXT = "攻击方附效上下文无效";
+    public static final String ATTACK_EFFECT_PLAN = "攻击方附效方案无效";
+    public static final String ATTACK_EFFECT_STATUS = "攻击方状态效果无效";
+    public static final String ATTACK_EFFECT_PROVIDER = "攻击方附效提供方抛出异常或重复认领";
 
     private VanillaDamageErrors() {
         // 诊断集中维护，不解析文案来决定游戏行为。

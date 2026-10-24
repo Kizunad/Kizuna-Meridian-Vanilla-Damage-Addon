@@ -14,6 +14,7 @@ import dev.kizuna.meridian.protocol.pb.MeridianMessages.*;
 import dev.kizuna.meridian.server.BodyCommandHandler;
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.InMemoryBodyStore;
+import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -98,6 +99,62 @@ public class VanillaDamageTest {
         assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("minecraft:magic", "minecraft:witch", false));
         assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("minecraft:indirect_magic", "minecraft:unknown", false));
         assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("addon:unknown", "addon:unknown", false));
+
+        assertTrue(preferences.attackEffectsEnabled());
+        assertEquals(4.0, preferences.maxExtraRatio(), 0);
+        assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(configuration()
+                .replace("max_extra_ratio = 4.0", "max_extra_ratio = -1")));
+        assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(configuration()
+                .replace("enabled = true", "enabled = \"yes\"")));
+    }
+
+    @Test
+    public void attackEffectProvidersRespectBindingMeleeClaimCapAndDeduplication() throws IOException {
+        var store = new InMemoryBodyStore(List.of(body()), List.of());
+        var providerCalls = new AtomicInteger();
+        AttackEffectProvider provider = payload -> {
+            providerCalls.incrementAndGet();
+            var context = AttackEffectProtobuf.decodeContext(payload);
+            return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.newBuilder()
+                    .setHandled(true).setExtraDamageHp(2).setEffectId("test:cast")
+                    .addStatusEffects(AttackEffectMessages.StatusEffect.newBuilder()
+                            .setEffectId("minecraft:slowness").setDurationTicks(20).setAmplifier(0)).build());
+        };
+        var bridge = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), preferences(), List.of(effects()),
+                List.of(provider));
+
+        var resolution = bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
+                DamageKind.BLUNT, 2, true, 10).orElseThrow();
+        assertEquals(2, resolution.extraDamageHp(), 0);
+        assertEquals(1, resolution.statusEffects().size());
+        bridge.markAttackEffectApplied("target", resolution.effectId());
+        assertTrue(bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
+                DamageKind.BLUNT, 2, true, 10).isEmpty());
+        assertEquals(2, providerCalls.get());
+
+        // 远程命中和未绑定攻击者均不询问提供方。
+        assertTrue(bridge.prepareAttackEffect("target", "missing", "minecraft:arrow", DamageKind.PIERCING,
+                2, false, 10).isEmpty());
+        assertTrue(bridge.prepareAttackEffect("target", "missing", "minecraft:mob_attack", DamageKind.BLUNT,
+                2, true, 10).isEmpty());
+        assertEquals(2, providerCalls.get());
+
+        AttackEffectProvider oversized = payload -> AttackEffectProtobuf.encodePlan(
+                AttackEffectMessages.AttackEffectPlan.newBuilder().setHandled(true).setExtraDamageHp(20).build());
+        var capped = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), preferences(), List.of(effects()),
+                List.of(oversized)).prepareAttackEffect("target", "subject", "minecraft:mob_attack",
+                DamageKind.BLUNT, 2, true, 10).orElseThrow();
+        assertEquals(8, capped.extraDamageHp(), 0);
+        assertTrue(capped.truncated());
+
+        AttackEffectProvider second = payload -> AttackEffectProtobuf.encodePlan(
+                AttackEffectMessages.AttackEffectPlan.newBuilder().setHandled(true).build());
+        var duplicateClaim = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), preferences(), List.of(effects()),
+                List.of(provider, second));
+        assertThrows(IllegalStateException.class, () -> duplicateClaim.prepareAttackEffect("target", "subject",
+                "minecraft:mob_attack", DamageKind.BLUNT, 2, true, 10));
+        assertThrows(IllegalArgumentException.class, () -> AttackEffectProtobuf.encodePlan(
+                AttackEffectMessages.AttackEffectPlan.newBuilder().setHandled(true).setExtraDamageHp(-1).build()));
     }
 
     @Test

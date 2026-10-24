@@ -15,12 +15,17 @@ import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageBody;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.RequestEnvelope;
+import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.UUID;
 
 /** 每个事件先确定唯一执行方，再向同一宿主提交受版本保护的意图。 */
@@ -28,18 +33,120 @@ public final class VanillaDamageBridge {
     private final List<BodyHealthHost> hosts;
     private final DamagePreferences preferences;
     private final List<BodyDamageIntegration> integrations;
+    private final List<AttackEffectProvider> attackEffectProviders;
+    private final Map<String, Set<String>> appliedAttackEffects = new HashMap<>();
 
     public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences,
                                List<BodyDamageIntegration> integrations) {
+        this(hosts, preferences, integrations, List.of());
+    }
+
+    public VanillaDamageBridge(List<BodyHealthHost> hosts, DamagePreferences preferences,
+                               List<BodyDamageIntegration> integrations,
+                               List<AttackEffectProvider> attackEffectProviders) {
         // 整套运行必须提供身体宿主和效果集成；未绑定实体由查询结果单独表达。
         this.hosts = List.copyOf(hosts);
         this.preferences = preferences;
         this.integrations = List.copyOf(integrations);
+        this.attackEffectProviders = List.copyOf(attackEffectProviders);
         if (this.hosts.isEmpty()) {
             throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_HOST);
         }
         if (this.integrations.isEmpty()) {
             throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_INTEGRATION);
+        }
+    }
+
+    public Optional<BodySnapshot> inspectBody(String subjectId) {
+        // 攻击方只读查询复用同一唯一宿主规则，不向提供方暴露可写身体入口。
+        return inspect(subjectId).map(Binding::body);
+    }
+
+    public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
+                                                                String attackerSubjectId,
+                                                                String sourceId,
+                                                                DamageKind kind,
+                                                                double rawDamageHp,
+                                                                boolean melee,
+                                                                long serverTick) {
+        // 未绑定攻击者不调用附效提供方；远程和配置关闭也在查询身体前短路。
+        if (!preferences.attackEffectsEnabled() || !melee || attackEffectProviders.isEmpty()) {
+            return Optional.empty();
+        }
+        return inspectBody(attackerSubjectId).flatMap(attackerBody -> prepareAttackEffect(
+                targetSubjectId, attackerSubjectId, attackerBody, sourceId, kind, rawDamageHp, melee, serverTick));
+    }
+
+    public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
+                                                                String attackerSubjectId,
+                                                                BodySnapshot attackerBody,
+                                                                String sourceId,
+                                                                DamageKind kind,
+                                                                double rawDamageHp,
+                                                                boolean melee,
+                                                                long serverTick) {
+        // 上下文固定攻击者快照和原版剂量；提供方不能改写目标身体或致伤类型。
+        if (!preferences.attackEffectsEnabled() || !melee || attackEffectProviders.isEmpty()) {
+            return Optional.empty();
+        }
+        var context = AttackEffectMessages.AttackEffectContext.newBuilder()
+                .setProtocolVersion(1).setAttackerSubjectId(attackerSubjectId).setAttackerBody(attackerBody)
+                .setTargetSubjectId(targetSubjectId).setSourceId(sourceId).setKind(kind)
+                .setRawDamageHp(rawDamageHp).setMelee(melee).setServerTick(serverTick).build();
+        AttackEffectMessages.AttackEffectPlan selected = null;
+        for (AttackEffectProvider provider : attackEffectProviders) {
+            final AttackEffectMessages.AttackEffectPlan candidate;
+            try {
+                candidate = AttackEffectProtobuf.decodePlan(provider.exchange(
+                        AttackEffectProtobuf.encodeContext(context)));
+            } catch (RuntimeException failure) {
+                // 附效是可选增益；提供方坏掉时由 Fabric 层记录并保留原版剂量。
+                throw new IllegalStateException(VanillaDamageErrors.ATTACK_EFFECT_PROVIDER, failure);
+            }
+            if (!candidate.getHandled()) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalStateException(VanillaDamageErrors.ATTACK_EFFECT_PROVIDER);
+            }
+            selected = candidate;
+        }
+        if (selected == null) {
+            return Optional.empty();
+        }
+        String effectId = selected.getEffectId();
+        if (!effectId.isBlank() && appliedAttackEffects.getOrDefault(targetSubjectId, Set.of()).contains(effectId)) {
+            // 同一施放 ID 对同一目标只认领一次；提供方仍被询问以保持窗口状态推进。
+            return Optional.empty();
+        }
+        double maximumExtra = rawDamageHp * preferences.maxExtraRatio();
+        if (!Double.isFinite(maximumExtra)) {
+            maximumExtra = Double.MAX_VALUE;
+        }
+        double extraDamage = Math.min(selected.getExtraDamageHp(), maximumExtra);
+        return Optional.of(new AttackEffectResolution(extraDamage,
+                selected.getStatusEffectsList(), effectId, extraDamage < selected.getExtraDamageHp()));
+    }
+
+    public void markAttackEffectApplied(String targetSubjectId, String effectId) {
+        // 只有同一身体事务成功后才写入去重集合，失败重试不丢失附效。
+        if (effectId == null || effectId.isBlank()) {
+            return;
+        }
+        appliedAttackEffects.computeIfAbsent(targetSubjectId, ignored -> new HashSet<>()).add(effectId);
+    }
+
+    public void clearAttackEffectState() {
+        // 服务器停止时丢弃实体引用和施放去重状态，避免跨世界复用旧效果 ID。
+        appliedAttackEffects.clear();
+    }
+
+    public record AttackEffectResolution(double extraDamageHp,
+                                         List<AttackEffectMessages.StatusEffect> statusEffects,
+                                         String effectId,
+                                         boolean truncated) {
+        public AttackEffectResolution {
+            statusEffects = List.copyOf(statusEffects);
         }
     }
 

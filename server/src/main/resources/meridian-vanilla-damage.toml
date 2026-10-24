@@ -188,3 +188,7 @@ torso = 35
 arms = 20
 legs = 20
 other = 5
+
+[attack_effects]
+enabled = true
+max_extra_ratio = 4.0

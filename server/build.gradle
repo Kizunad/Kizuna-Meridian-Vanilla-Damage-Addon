@@ -1,7 +1,24 @@
+plugins { id 'com.google.protobuf' }
+
 dependencies {
     api 'local.meridian:server'
+    api 'com.google.protobuf:protobuf-java:4.36.2'
     implementation 'org.tomlj:tomlj:1.1.1'
     testImplementation 'junit:junit:4.13.2'
+}
+
+def frameworkDirectory = providers.gradleProperty('meridianFrameworkDir')
+        .map { file(it) }
+        .getOrElse(file('../Kizuna-Meridian-Mod-Framework'))
+def frameworkProtoDirectory = new File(frameworkDirectory, 'shared/src/main/proto')
+
+tasks.withType(com.google.protobuf.gradle.GenerateProtoTask).configureEach {
+    // 只编译本仓库的新协议；Framework proto 仅作为 import 搜索路径，避免重复生成 BodyMessages。
+    addIncludeDir(files(frameworkProtoDirectory))
+}
+
+protobuf {
+    protoc { artifact = 'com.google.protobuf:protoc:4.36.2' }
 }
 
 test { useJUnit() }
