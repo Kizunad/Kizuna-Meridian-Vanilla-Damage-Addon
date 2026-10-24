@@ -123,6 +123,20 @@ other = 5
 
 分类描述本次致伤机制，不自动建立中毒、流血或灼烧周期。其他模组添加的来源默认保留其 ID，由生物策略解释。
 
+## 攻击方附效
+
+当攻击者是已绑定 Meridian 身体的 `LivingEntity`，且来源是 `mob_attack`、`mob_attack_no_aggro` 或 `player_attack`，服务端才会查询攻击者只读身体并询问 `meridian_attack_effect` 提供方。箭、药水和其他投射物首版不会调用此入口；攻击者未绑定时也不会调用。入口使用 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 的 Protobuf 字节，提供方只接收服务端生成的攻击者快照、目标 UUID、原版来源、分类、护甲前剂量和世界 tick。
+
+最多一个提供方可以返回 `handled = true`。提供方返回的 `extra_damage_hp` 先与原版护甲前剂量相加，再经过同一件局部护甲、抗性、保护附魔和吸收，最后和原伤害一起向同一部位提交一次身体事务。附加剂量默认不能超过原版剂量的 4 倍，可在配置中修改；超出部分截断并记录日志。提供方抛错、返回非法方案或重复认领时，丢弃全部附效，原版伤害仍照常结算。
+
+`status_effects` 暂存到当前伤害帧，在原版 `damage` 返回阶段对仍存活的目标施加；目标已死亡则丢弃。同一目标上的非空 `effect_id` 只接受一次，用于横扫和多段命中去重。配置节如下：
+
+```toml
+[attack_effects]
+enabled = true
+max_extra_ratio = 4.0
+```
+
 ## 死亡与保留伤势
 
 原版实体死亡后，向身体发送死亡确认；伤害策略先判身体死亡时，待原版本次伤害调用结束，再将实体 HP 置零并调用原版死亡流程。已经死亡的不重复执行；框架只释放一次真元、停止动作与任务，并保留局部 HP、疲劳及伤势。

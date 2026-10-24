@@ -7,7 +7,10 @@
   "authors": ["Kizunad"],
   "license": "PolyForm-Noncommercial-1.0.0",
   "environment": "*",
-  "entrypoints": {"main": ["dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric"]},
+  "entrypoints": {
+    "main": ["dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric"],
+    "meridian_attack_effect": []
+  },
   "mixins": ["meridian_vanilla_damage.mixins.json"],
   "depends": {"java": ">=17", "minecraft": "1.20.1", "fabricloader": ">=0.16.10", "fabric-api": "*",
     "meridian_human_host": "*", "meridian_vanilla_healing": "*"}

@@ -10,6 +10,9 @@ import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvancePlan;
 import dev.kizuna.meridian.server.BodyCommandHandler;
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.InMemoryBodyStore;
+import dev.kizuna.meridian.vanilla.AttackEffectProtobuf;
+import dev.kizuna.meridian.vanilla.AttackEffectProvider;
+import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
@@ -29,10 +32,14 @@ import net.minecraft.test.TestContext;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** 整体回归：真实 PlayerEntity/LivingEntity、Mixin、Fabric 死亡事件与核心账本。 */
 public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
     private static final InMemoryBodyStore STORE = new InMemoryBodyStore(List.of(), List.of());
+    private static volatile String attackEffectTarget;
+    private static volatile String attackEffectFailureTarget;
+    private static final AtomicInteger ATTACK_EFFECT_CALLS = new AtomicInteger();
     private static final BodyCommandHandler<String> COMMANDS = new BodyCommandHandler<>(
             (caller, command) -> Optional.of(caller), (caller, command, body) -> true,
             (caller, body) -> TimeAdvancePlan.newBuilder().setTarget(BodyProtobuf.toTime(body.settledAt()))
@@ -87,6 +94,59 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
         context.assertTrue(body(fragile).vitality().dead() && !fragile.isAlive(), "身体死亡必须同步原版实体");
         context.assertTrue(body(fragile).revision() == 1, "反向同步不能重复提交伤害或死亡");
         context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void attackEffectProviderAddsDamageAndStatusOnce(TestContext context) {
+        var attacker = context.spawnEntity(EntityType.ZOMBIE, 6, 2, 6);
+        var target = context.createMockSurvivalPlayer();
+        bind(attacker, "test:creature", "shell", 100);
+        bind(target, "test:creature", "shell", 100);
+        attackEffectTarget = target.getUuidAsString();
+        ATTACK_EFFECT_CALLS.set(0);
+        try {
+            float before = target.getHealth();
+            target.damage(target.getDamageSources().mobAttack(attacker), 2);
+            assertClose(context, displayedBodyLoss(target, before), 3, "测试攻击附效应与原版伤害合并一次");
+            assertClose(context, 100 - body(target).partStates().get(0).hp(), 3,
+                    "附加伤害必须进入同一身体事务");
+            context.assertTrue(target.hasStatusEffect(StatusEffects.STRENGTH),
+                    "攻击附效状态应在 damage 返回后施加");
+
+            target.timeUntilRegen = 0;
+            before = target.getHealth();
+            target.damage(target.getDamageSources().mobAttack(attacker), 2);
+            assertClose(context, displayedBodyLoss(target, before), 2,
+                    "同一 effect_id 对同一目标不能重复附加伤害");
+            assertClose(context, 100 - body(target).partStates().get(0).hp(), 5,
+                    "去重后原版伤害仍应正常提交");
+            context.assertTrue(ATTACK_EFFECT_CALLS.get() == 2, "每次近战命中都应只询问一次测试提供方");
+            context.complete();
+        } finally {
+            attackEffectTarget = null;
+        }
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void attackEffectProviderFailureKeepsOriginalDamage(TestContext context) {
+        var attacker = context.spawnEntity(EntityType.ZOMBIE, 6, 2, 6);
+        var target = context.createMockSurvivalPlayer();
+        bind(attacker, "test:creature", "shell", 100);
+        bind(target, "test:creature", "shell", 100);
+        attackEffectFailureTarget = target.getUuidAsString();
+        try {
+            float before = target.getHealth();
+            target.damage(target.getDamageSources().mobAttack(attacker), 2);
+            assertClose(context, displayedBodyLoss(target, before), 2,
+                    "提供方异常不能改变原版伤害剂量");
+            assertClose(context, 100 - body(target).partStates().get(0).hp(), 2,
+                    "提供方异常不能跳过原版身体事务");
+            context.assertTrue(!target.hasStatusEffect(StatusEffects.STRENGTH),
+                    "提供方异常不能施加附加状态");
+            context.complete();
+        } finally {
+            attackEffectFailureTarget = null;
+        }
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
@@ -297,6 +357,25 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
         }
         return HealthHostProtobuf.encodeResponse(response.setBody(BodyProtobuf.toMessage(
                 STORE.find(found.get().id()).orElseThrow())).build());
+    }
+
+    /** GameTest 专用提供方，真实走 meridian_attack_effect entrypoint 和 Protobuf 校验。 */
+    public static final class TestAttackEffectProvider implements AttackEffectProvider {
+        @Override
+        public byte[] exchange(byte[] payload) {
+            var context = AttackEffectProtobuf.decodeContext(payload);
+            if (context.getTargetSubjectId().equals(attackEffectFailureTarget)) {
+                throw new IllegalStateException("test provider failure");
+            }
+            if (!context.getTargetSubjectId().equals(attackEffectTarget)) {
+                return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.getDefaultInstance());
+            }
+            ATTACK_EFFECT_CALLS.incrementAndGet();
+            return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.newBuilder()
+                    .setHandled(true).setExtraDamageHp(1).setEffectId("test:attack-cast")
+                    .addStatusEffects(AttackEffectMessages.StatusEffect.newBuilder()
+                            .setEffectId("minecraft:strength").setDurationTicks(20).setAmplifier(0)).build());
+        }
     }
 
     private static void bind(LivingEntity entity, String templateId, String partId, double hp) {

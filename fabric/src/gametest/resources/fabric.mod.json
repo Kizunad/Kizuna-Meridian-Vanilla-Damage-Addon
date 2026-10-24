@@ -6,6 +6,7 @@
   "environment": "*",
   "entrypoints": {
     "fabric-gametest": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"],
-    "meridian_health_host": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"]
+    "meridian_health_host": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"],
+    "meridian_attack_effect": ["dev.kizuna.meridian.vanilla.test.DamageGameTest$TestAttackEffectProvider"]
   }
 }
