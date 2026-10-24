@@ -20,6 +20,11 @@ public final class VanillaDamageKinds {
                     "minecraft:falling_stalactite", "minecraft:thorns" -> DamageKind.PIERCING;
             case "minecraft:wither" -> DamageKind.TOXIC;
             case "minecraft:dragon_breath" -> DamageKind.CORROSIVE;
+            case "minecraft:indirect_magic" -> switch (attackerId) {
+                case "minecraft:evoker" -> DamageKind.PIERCING;
+                case "minecraft:witch" -> DamageKind.TOXIC;
+                default -> DamageKind.CUSTOM;
+            };
             case "minecraft:mob_attack", "minecraft:mob_attack_no_aggro", "minecraft:player_attack" -> melee(attackerId, edgedWeapon);
             case "minecraft:fall", "minecraft:fly_into_wall", "minecraft:falling_block", "minecraft:falling_anvil",
                     "minecraft:explosion", "minecraft:player_explosion", "minecraft:cramming" -> DamageKind.BLUNT;

@@ -116,6 +116,9 @@ other = 5
 | 雷电 | `ELECTRIC` 电击 |
 | 龙息 | `CORROSIVE` 腐蚀 |
 | 凋零 | `TOXIC` 毒性 |
+| 唤魔者尖牙（`indirect_magic`） | `PIERCING` 穿刺 |
+| 女巫伤害药水（`indirect_magic`） | `TOXIC` 毒性 |
+| 其他 `indirect_magic` | `CUSTOM` |
 | 其他或不能可靠细分的来源 | `CUSTOM`，保留原版 damage type ID |
 
 分类描述本次致伤机制，不自动建立中毒、流血或灼烧周期。其他模组添加的来源默认保留其 ID，由生物策略解释。

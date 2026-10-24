@@ -93,6 +93,10 @@ public class VanillaDamageTest {
         assertEquals(DamageKind.CUTTING, VanillaDamageKinds.classify("minecraft:mob_attack", "minecraft:zombie", true));
         assertEquals(DamageKind.PIERCING, VanillaDamageKinds.classify("minecraft:mob_attack", "minecraft:spider", false));
         assertEquals(DamageKind.HEAT, VanillaDamageKinds.classify("minecraft:lava", "minecraft:unknown", false));
+        assertEquals(DamageKind.PIERCING, VanillaDamageKinds.classify("minecraft:indirect_magic", "minecraft:evoker", false));
+        assertEquals(DamageKind.TOXIC, VanillaDamageKinds.classify("minecraft:indirect_magic", "minecraft:witch", false));
+        assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("minecraft:magic", "minecraft:witch", false));
+        assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("minecraft:indirect_magic", "minecraft:unknown", false));
         assertEquals(DamageKind.CUSTOM, VanillaDamageKinds.classify("addon:unknown", "addon:unknown", false));
     }
 
