@@ -37,6 +37,13 @@ sourceSets {
         runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
     }
 }
+
+dependencies {
+    // Loom 开发重映射不装载 Humanoid 安装 JAR 的嵌套库；只为 GameTest 补齐纯 Java server。
+    gametestRuntimeOnly files(rootProject.file(
+            '../Kizuna-Meridian-Vanilla-Humanoid-Threatening/server/build/libs/kizuna-meridian-vanilla-humanoid-threatening-server-0.1.0-SNAPSHOT.jar'))
+}
+
 loom {
     mods {
         meridian_damage_test { sourceSet sourceSets.gametest }
