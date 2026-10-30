@@ -19,7 +19,40 @@ processResources {
     filesMatching('fabric.mod.json') { expand version: project.version }
 }
 
+// Loom 只按坐标复用 modprocessing 里的嵌套 JAR，SNAPSHOT 坐标不变时会把旧 server JAR 打进发布 JAR；
+// 每次打发布 JAR 前清掉该缓存，让 include 的 JAR 按当前产物重新生成。
+def clearNestedJarCache = tasks.register('clearNestedJarCache', Delete) {
+    delete layout.buildDirectory.dir('loom-cache/temp/modprocessing')
+}
+tasks.named('remapJar') {
+    dependsOn clearNestedJarCache
+}
+
 apply from: '../../Kizuna-Meridian-Mod-Framework/scripts/full-assembly.gradle'
+
+// 命中僵直写入功法服务，功法模块是编译期必需依赖；普通库显式提供安装包内的嵌套依赖。
+def techniqueDirectory = rootProject.file('../Kizuna-Meridian-Technique-Framework')
+def techniqueArtifacts = [
+        fabric: new File(techniqueDirectory,
+                'fabric/build/libs/kizuna-meridian-technique-framework-fabric-0.1.0-SNAPSHOT.jar'),
+        server: new File(techniqueDirectory,
+                'server/build/libs/kizuna-meridian-technique-framework-server-0.1.0-SNAPSHOT.jar'),
+        shared: new File(techniqueDirectory,
+                'shared/build/libs/kizuna-meridian-technique-framework-shared-0.1.0-SNAPSHOT.jar')
+]
+dependencies {
+    modImplementation files(techniqueArtifacts.fabric)
+    implementation files(techniqueArtifacts.server, techniqueArtifacts.shared)
+}
+tasks.withType(JavaExec).configureEach {
+    doFirst {
+        techniqueArtifacts.values().each { artifact ->
+            if (!artifact.isFile()) {
+                throw new GradleException("缺少必需功法装配产物：${artifact}")
+            }
+        }
+    }
+}
 
 loom {
     mods {

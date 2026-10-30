@@ -5,6 +5,9 @@ import dev.kizuna.meridian.protocol.BodyProtobuf;
 import dev.kizuna.meridian.protocol.HealthHostProtobuf;
 import dev.kizuna.meridian.protocol.MeridianProtocol;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostResponse;
+import dev.kizuna.meridian.protocol.pb.BodyMessages;
+import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
+import dev.kizuna.meridian.vanilla.fabric.VanillaDamageTypeTags;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvanceMode;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvancePlan;
 import dev.kizuna.meridian.server.BodyCommandHandler;
@@ -28,6 +31,22 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.test.GameTest;
 import net.minecraft.test.TestContext;
+import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.entity.damage.DamageType;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.tag.TagKey;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.Arm;
+import net.minecraft.util.Hand;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.network.ServerPlayNetworkHandler;
+import net.minecraft.network.ClientConnection;
+import net.minecraft.network.NetworkSide;
+import net.minecraft.network.PacketCallbacks;
+import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
+import com.mojang.authlib.GameProfile;
 
 import java.util.List;
 import java.util.Optional;
@@ -40,10 +59,36 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
     private static volatile String attackEffectTarget;
     private static volatile String attackEffectFailureTarget;
     private static final AtomicInteger ATTACK_EFFECT_CALLS = new AtomicInteger();
+    private static final double MUSCLE_HP = 100;
+    private static final double MUSCLE_STRENGTH = 300;
+    private static final double MUSCLE_POWER = 100;
+    private static final double MUSCLE_ENDURANCE = 1000;
+    private static final double BOOST = 1.3;
+    private static final double COLLAPSE = 0.85;
+    private static final float STRIKE_DAMAGE = 4;
+    private static final float EXHAUSTED_DAMAGE = 1;
+    private static final long MODIFIER_MILLIS = 1000;
+    private static final double EPSILON = 1e-5;
+    private static final float CHEST_ARMOR = 8;
+    private static final float CHEST_TOUGHNESS = 2;
+    private static final int ATTACK_COOLDOWN_TICKS = 20;
+    private static final int STATUS_DURATION_TICKS = 20;
+    private static final int ATTACKER_OFFSET = 6;
+    private static final int TARGET_OFFSET = 2;
+    private static final int SPAWN_Y = 2;
+    private static final int MOCK_PLAYER_SPACING = 2;
+    private static final int SWEEPING_LEVEL = 3;
+    private static final double SWEEPING_MULTIPLIER = 0.75;
+    private static final double ATTACK_DISTANCE = 1.5;
+    private static final int SHIELD_READY_TICKS = 6;
+    private static final double STRIKE_FATIGUE = 3;
     private static final BodyCommandHandler<String> COMMANDS = new BodyCommandHandler<>(
             (caller, command) -> Optional.of(caller), (caller, command, body) -> true,
-            (caller, body) -> TimeAdvancePlan.newBuilder().setTarget(BodyProtobuf.toTime(body.settledAt()))
-                    .setMode(TimeAdvanceMode.ACTIVE).setBiologicalSecondsPerSimulationSecond(1).build(),
+            (caller, body) -> TimeAdvancePlan.newBuilder()
+                    .setTarget(BodyProtobuf.toTime(body.settledAt()))
+                    .setMode(TimeAdvanceMode.ACTIVE)
+                    .setBiologicalSecondsPerSimulationSecond(1)
+                    .build(),
             STORE, (caller, receipt, previous, updated) -> { /* 由断言读取权威提交。 */ });
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
@@ -339,13 +384,22 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
     public byte[] exchange(byte[] payload) {
         // 测试宿主仅绑定此测试登记的实体；其余实体保留原版行为。
         var request = HealthHostProtobuf.decodeRequest(payload);
-        var response = HealthHostResponse.newBuilder().setProtocolVersion(1).setRequestId(request.getRequestId());
+        var response = HealthHostResponse.newBuilder()
+                .setProtocolVersion(1)
+                .setRequestId(request.getRequestId());
         var found = STORE.find(new BodyId(request.getSubjectId()));
         if (found.isEmpty()) {
-            return HealthHostProtobuf.encodeResponse(response.setUnbound(true).build());
+            return HealthHostProtobuf.encodeResponse(response.setUnbound(true /* unbound */).build());
+        }
+        if (request.hasExertion()) {
+            var result = MeridianProtocol.decodeResponse(COMMANDS.handle("test", request.getExertion().toByteArray()));
+            if (result.hasFailure()) {
+                return HealthHostProtobuf.encodeResponse(response.setFailure(result.getFailure()).build());
+            }
         }
         if (request.hasEffect()) {
-            var result = MeridianProtocol.decodeResponse(COMMANDS.handleHealthEffect("test", request.getEffect().toByteArray()));
+            var result = MeridianProtocol.decodeResponse(COMMANDS.handleHealthEffect(
+                    "test", request.getEffect().toByteArray()));
             if (result.hasFailure()) {
                 return HealthHostProtobuf.encodeResponse(response.setFailure(result.getFailure()).build());
             }
@@ -359,6 +413,315 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
                 STORE.find(found.get().id()).orElseThrow())).build());
     }
 
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void muscleScalesBeforeArmorOnceForPlayerAndUnboundTargets(TestContext context) {
+        // 两条 applyDamage 实现都必须在护甲前乘一次，目标无身体仍受攻击者系数影响。
+        var attacker = context.spawnEntity(EntityType.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindMuscles(attacker, BOOST);
+        var player = context.createMockSurvivalPlayer();
+        bind(player, "human:adult", "chest", MUSCLE_HP);
+        player.equipStack(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
+        player.tick();
+        float before = player.getHealth();
+        player.damage(player.getDamageSources().mobAttack(attacker), STRIKE_DAMAGE);
+        double expected = DamageUtil.getDamageLeft((float) (STRIKE_DAMAGE * BOOST), CHEST_ARMOR, CHEST_TOUGHNESS);
+        assertClose(context, displayedBodyLoss(player, before), expected, "玩家路径必须在护甲前只乘一次");
+        var attackerBody = body(attacker);
+        context.assertTrue(attackerBody.revision() == 1, "一次命中只能提交一次肌肉做功");
+        context.assertTrue(attackerBody.tissueStates().get(1).fatigue() > 0, "出手右臂没有记做功");
+        context.assertTrue(attackerBody.tissueStates().get(0).fatigue() == 0, "主手攻击错误消耗左臂");
+
+        var otherAttacker = context.spawnEntity(EntityType.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindMuscles(otherAttacker, BOOST);
+        var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        cow.equipStack(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
+        cow.tick();
+        float cowBefore = cow.getHealth();
+        cow.damage(cow.getDamageSources().mobAttack(otherAttacker), STRIKE_DAMAGE);
+        assertClose(context, cowBefore - cow.getHealth(), expected,
+                "无身体目标须先乘系数再走原版全身护甲");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void sameSwordUsesPeakCollapseAndExhaustedStillHits(TestContext context) {
+        // 使用真实剑攻击，直接能力修正模拟蓄力和虚脱，不依赖功法仓。
+        for (double multiplier : new double[]{1, BOOST, COLLAPSE}) {
+            var attacker = context.createMockSurvivalPlayer();
+            attacker.equipStack(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
+            for (int tick = 0; tick < ATTACK_COOLDOWN_TICKS; tick++) {
+                attacker.tick();
+            }
+            attacker.setOnGround(true /* onGround */);
+            attacker.setSprinting(true /* sprinting */);
+            bindMuscles(attacker, multiplier);
+            var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+            float before = cow.getHealth();
+            double vanillaDamage = attacker.getAttributeValue(EntityAttributes.GENERIC_ATTACK_DAMAGE);
+            attacker.attack(cow);
+            assertClose(context, before - cow.getHealth(), vanillaDamage * multiplier,
+                    "同剑伤害必须跟随力量修正");
+        }
+        var exhausted = context.spawnEntity(EntityType.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindMuscles(exhausted, 0);
+        var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        float before = cow.getHealth();
+        cow.damage(cow.getDamageSources().mobAttack(exhausted), STRIKE_DAMAGE);
+        assertClose(context, before - cow.getHealth(), EXHAUSTED_DAMAGE, "力竭应按配置系数继续造成伤害");
+        context.assertTrue(body(exhausted).revision() == 0, "做功被拒不能留下任何部分疲劳");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void playerSweepUsesOneExertionAndOnePreStrikeCoefficient(TestContext context) {
+        // 真实剑横扫命中三个目标，逐目标缩放复用同一笔做功前系数。
+        PlayerEntity attacker = context.createMockSurvivalPlayer();
+        var sword = new ItemStack(Items.IRON_SWORD);
+        sword.addEnchantment(Enchantments.SWEEPING, SWEEPING_LEVEL);
+        prepareSword(attacker, sword);
+        bindMuscles(attacker, BOOST);
+        var primary = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        var firstSweep = context.spawnEntity(EntityType.COW, TARGET_OFFSET + 1, SPAWN_Y, TARGET_OFFSET);
+        var secondSweep = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET + 1);
+        attacker.setPosition(primary.getPos().add(0, 0, -ATTACK_DISTANCE));
+        double vanillaDamage = attacker.getAttributeValue(EntityAttributes.GENERIC_ATTACK_DAMAGE);
+        float primaryHealth = primary.getHealth();
+        float firstHealth = firstSweep.getHealth();
+        float secondHealth = secondSweep.getHealth();
+        attacker.attack(primary);
+        double sweepDamage = (1 + SWEEPING_MULTIPLIER * vanillaDamage) * BOOST;
+        assertClose(context, primaryHealth - primary.getHealth(), vanillaDamage * BOOST, "主目标系数错误");
+        assertClose(context, firstHealth - firstSweep.getHealth(), sweepDamage, "第一横扫目标系数错误");
+        assertClose(context, secondHealth - secondSweep.getHealth(), sweepDamage, "第二横扫目标系数错误");
+        context.assertTrue(body(attacker).revision() == 1, "一次横扫重复提交做功");
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "横扫疲劳非单笔");
+        primary.timeUntilRegen = 0;
+        attacker.attack(primary);
+        context.assertTrue(body(attacker).revision() == 2, "出手上下文没有释放");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void shieldBlockStillRecordsOneExertion(TestContext context) {
+        // 盾挡在 applyDamage 前退出，出手账仍应完成且只记一次。
+        PlayerEntity attacker = context.createMockSurvivalPlayer();
+        prepareSword(attacker, new ItemStack(Items.IRON_SWORD));
+        bindMuscles(attacker, BOOST);
+        PlayerEntity defender = context.createMockSurvivalPlayer();
+        defender.setStackInHand(Hand.OFF_HAND, new ItemStack(Items.SHIELD));
+        defender.setCurrentHand(Hand.OFF_HAND);
+        for (int tick = 0; tick < SHIELD_READY_TICKS; tick++) {
+            defender.tick();
+        }
+        defender.setYaw(0);
+        attacker.setPosition(defender.getPos().add(0, 0, ATTACK_DISTANCE));
+        float health = defender.getHealth();
+        attacker.attack(defender);
+        assertClose(context, defender.getHealth(), health, "盾没有实际挡住伤害");
+        context.assertTrue(body(attacker).revision() == 1, "盾挡未按出手记一笔做功");
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "盾挡疲劳错误");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void handSwingPacketRecordsMissAndDoesNotChargeAttackTwice(TestContext context) {
+        // 使用正式网络处理器接收挥手包，主手挥空收费。
+        // 实体攻击后的动画包不重复收费。
+        var server = context.getWorld().getServer();
+        var profile = new GameProfile(UUID.randomUUID(), "damage_swing");
+        var attacker = new ServerPlayerEntity(server, context.getWorld(), profile);
+        var connection = new SilentConnection();
+        attacker.networkHandler = new ServerPlayNetworkHandler(server, connection, attacker);
+        bindMuscles(attacker, BOOST);
+        var mainSwing = new HandSwingC2SPacket(Hand.MAIN_HAND);
+        attacker.networkHandler.onHandSwing(mainSwing);
+        context.assertTrue(body(attacker).revision() == 1, "主手挥空未记做功");
+        attacker.networkHandler.onHandSwing(new HandSwingC2SPacket(Hand.OFF_HAND));
+        context.assertTrue(body(attacker).revision() == 1, "副手动画被记成主手出手");
+        var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        attacker.attack(cow);
+        attacker.networkHandler.onHandSwing(mainSwing);
+        context.assertTrue(body(attacker).revision() == 2, "攻击和动画包重复做功");
+        attacker.networkHandler.onHandSwing(mainSwing);
+        context.assertTrue(body(attacker).revision() == 3, "下一次挥空被旧实体攻击吞掉");
+        context.complete();
+    }
+
+    private static void prepareSword(PlayerEntity attacker, ItemStack sword) {
+        // 完成原版装备属性及攻击冷却边界，保持非疾跑以启用横扫。
+        attacker.equipStack(EquipmentSlot.MAINHAND, sword);
+        for (int tick = 0; tick < ATTACK_COOLDOWN_TICKS; tick++) {
+            attacker.tick();
+        }
+        attacker.setOnGround(true /* onGround */);
+        attacker.setSprinting(false /* sprinting */);
+    }
+
+    private static final class SilentConnection extends ClientConnection {
+        private SilentConnection() {
+            // 测试保留真实网络处理器，只省去套接字传输。
+            super(NetworkSide.SERVERBOUND);
+        }
+
+        @Override
+        public void send(Packet<?> packet) {
+            // 本用例只验证入站出手，忽略对外动画同步。
+        }
+
+        @Override
+        public void send(Packet<?> packet, PacketCallbacks callbacks) {
+            // 同步完成成功回调，不引入异步网络时序。
+            if (callbacks != null) {
+                callbacks.onSuccess();
+            }
+        }
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void defaultMeleeSourcesAndLeftMainHandRemainSupported(TestContext context) {
+        // 默认三个原版来源都接入近战；左撇子主手不能读取被强化的右臂。
+        var attacker = context.createMockSurvivalPlayer();
+        attacker.setMainArm(Arm.LEFT);
+        var sources = attacker.getDamageSources();
+        for (DamageSource source : List.of(sources.playerAttack(attacker), sources.mobAttack(attacker),
+                sources.mobAttackNoAggro(attacker))) {
+            context.assertTrue(source.isIn(VanillaDamageTypeTags.MELEE), "原版近战来源遗漏：" + source);
+        }
+        bindMuscles(attacker, BOOST);
+        var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        float before = cow.getHealth();
+        cow.damage(sources.mobAttackNoAggro(attacker), STRIKE_DAMAGE);
+        assertClose(context, before - cow.getHealth(), STRIKE_DAMAGE, "左主手不应读取右臂力量");
+        var attackerBody = body(attacker);
+        context.assertTrue(attackerBody.tissueStates().get(0).fatigue() > 0, "左主手没有记做功");
+        context.assertTrue(attackerBody.tissueStates().get(1).fatigue() == 0, "左主手错误消耗右臂");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void taggedMeleeSelectsHandsOverridesKindAndKeepsExtraUnscaled(TestContext context) {
+        // 自定义来源只用数据包标签接入，附效的额外 1 HP 不乘攻击者肌肉系数。
+        var attacker = context.createMockSurvivalPlayer();
+        attacker.setMainArm(Arm.LEFT);
+        bindMuscles(attacker, BOOST);
+        var target = context.createMockSurvivalPlayer();
+        bind(target, "test:creature", "shell", MUSCLE_HP);
+        var source = customSource(context, attacker, "off_strike");
+        context.assertTrue(VanillaDamageTypeTags.kind(source).orElseThrow() == DamageKind.CUTTING,
+                "自定义 kind 标签没有覆盖默认分类");
+        attackEffectTarget = target.getUuidAsString();
+        ATTACK_EFFECT_CALLS.set(0);
+        try {
+            float before = target.getHealth();
+            target.damage(source, STRIKE_DAMAGE);
+            assertClose(context, displayedBodyLoss(target, before), STRIKE_DAMAGE * BOOST + 1,
+                    "副手应取右臂，附效额外伤害不乘系数");
+            context.assertTrue(ATTACK_EFFECT_CALLS.get() == 1, "自定义 melee 没有触发附效");
+            var attackerBody = body(attacker);
+            context.assertTrue(attackerBody.tissueStates().get(1).fatigue() > 0, "左撇子副手没有消耗右臂");
+            context.assertTrue(attackerBody.tissueStates().get(0).fatigue() == 0, "副手误消耗主手");
+        } finally {
+            attackEffectTarget = null;
+        }
+        var bothAttacker = context.createMockSurvivalPlayer();
+        bindMuscles(bothAttacker, 1);
+        var cow = context.spawnEntity(EntityType.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        cow.damage(customSource(context, bothAttacker, "two_strike"), STRIKE_DAMAGE);
+        context.assertTrue(body(bothAttacker).tissueStates().stream().allMatch(tissue -> tissue.fatigue() > 0),
+                "双手标签必须给两臂都记做功");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
+    public void conflictingKindTagsAreRejectedOnLoadAndUse(TestContext context) {
+        // 临时复用真实注册表成员校验加载入口，完成后恢复标签，不污染其他测试。
+        var registry = context.getWorld().getRegistryManager().get(RegistryKeys.DAMAGE_TYPE);
+        var original = registry.streamTagsAndEntries().collect(java.util.stream.Collectors.toMap(
+                pair -> pair.getFirst(), pair -> pair.getSecond().stream().toList()));
+        var conflicting = new java.util.HashMap<>(original);
+        var type = registry.entryOf(net.minecraft.registry.RegistryKey.of(RegistryKeys.DAMAGE_TYPE,
+                new Identifier("meridian_damage_test", "off_strike")));
+        TagKey<DamageType> blunt = TagKey.of(RegistryKeys.DAMAGE_TYPE, new Identifier("meridian", "kind/blunt"));
+        conflicting.put(blunt, List.of(type));
+        try {
+            registry.populateTags(conflicting);
+            assertKindConflict(context, () -> VanillaDamageTypeTags.validate(registry));
+            assertKindConflict(context, () -> VanillaDamageTypeTags.kind(new DamageSource(type)));
+        } finally {
+            registry.populateTags(original);
+        }
+        context.complete();
+    }
+
+    private static void assertKindConflict(TestContext context, Runnable action) {
+        // 分别保护加载校验和运行时分类，冲突不能静默选择其中一种标签。
+        try {
+            action.run();
+        } catch (IllegalStateException expected) {
+            return;
+        }
+        context.throwGameTestException("致伤类型标签冲突未被拒绝");
+    }
+
+    private static DamageSource customSource(TestContext context, LivingEntity attacker, String path) {
+        // 来源完全由服务端注册表构造，客户端不能上报出手侧与伤害分类。
+        var registry = context.getWorld().getRegistryManager().get(RegistryKeys.DAMAGE_TYPE);
+        var key = net.minecraft.registry.RegistryKey.of(RegistryKeys.DAMAGE_TYPE,
+                new Identifier("meridian_damage_test", path));
+        return new DamageSource(registry.entryOf(key), attacker);
+    }
+
+    private static void bindMuscles(LivingEntity entity, double rightMultiplier) {
+        // 两臂共用固定构型；零值表示右臂疲劳耗尽，正值只修改右臂力量。
+        var left = new Anatomy.PartId("left_upper_arm");
+        var right = new Anatomy.PartId("right_upper_arm");
+        var leftMuscle = testMuscle("left_muscle", left);
+        var rightMuscle = testMuscle("right_muscle", right);
+        double rightFatigue = 0;
+        if (rightMultiplier == 0) {
+            rightFatigue = MUSCLE_HP;
+        }
+        var structure = new BodyStructure(List.of(new Anatomy.PartDefinition(left, "左臂", MUSCLE_HP),
+                new Anatomy.PartDefinition(right, "右臂", MUSCLE_HP)), List.of(leftMuscle, rightMuscle),
+                List.of(), List.of(), List.of());
+        var snapshot = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION, new BodyId(entity.getUuidAsString()),
+                new BodyTemplate.Reference(new DefinitionId("test:arms"), 1), structure, Realm.WANDERING_QI,
+                List.of(new AnatomyState.Part(left, MUSCLE_HP), new AnatomyState.Part(right, MUSCLE_HP)),
+                List.of(new AnatomyState.Tissue(leftMuscle.id(), MUSCLE_HP, 0),
+                        new AnatomyState.Tissue(rightMuscle.id(), MUSCLE_HP, rightFatigue)),
+                List.of(), List.of(), List.of(), new VitalityState(0, MUSCLE_ENDURANCE, 0, false /* dead */),
+                new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0);
+        var message = BodyProtobuf.toMessage(snapshot).toBuilder();
+        if (rightMultiplier > 0) {
+            message.addModifiers(strengthModifier(rightMultiplier));
+        }
+        STORE.registerBody(BodyProtobuf.fromMessage(message.build()));
+    }
+
+    private static BodyMessages.CapabilityModifier strengthModifier(double multiplier) {
+        // 常值曲线覆盖整个做功时段，不通过伪造做功结果模拟峰值。
+        var start = BodyMessages.CurvePoint.newBuilder().setValue(1).build();
+        var end = start.toBuilder().setOffsetMillis(MODIFIER_MILLIS).build();
+        return BodyMessages.CapabilityModifier.newBuilder()
+                .setId("test:strength")
+                .setSource("test:source")
+                .setTissueId("right_muscle")
+                .addCurve(start)
+                .addCurve(end)
+                .setStrengthPeak(multiplier)
+                .setBurstPeak(1)
+                .setEndurancePeak(1)
+                .setRecoveryPeak(1)
+                .build();
+    }
+
+    private static Anatomy.TissueDefinition testMuscle(String id, Anatomy.PartId part) {
+        // 不依赖 Human 内部类，组织选择只使用公开标签和 Framework 定义。
+        var capacity = new Anatomy.TissueCapacity(MUSCLE_STRENGTH, MUSCLE_POWER, MUSCLE_ENDURANCE);
+        return new Anatomy.TissueDefinition(new Anatomy.TissueId(id), "肌肉", new DefinitionId("test:muscle"),
+                part, MUSCLE_HP, MUSCLE_HP, List.of(), capacity, 0, List.of(new DefinitionId("human:arm_muscle")));
+    }
+
     /** GameTest 专用提供方，真实走 meridian_attack_effect entrypoint 和 Protobuf 校验。 */
     public static final class TestAttackEffectProvider implements AttackEffectProvider {
         @Override
@@ -368,13 +731,24 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
                 throw new IllegalStateException("test provider failure");
             }
             if (!context.getTargetSubjectId().equals(attackEffectTarget)) {
-                return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.getDefaultInstance());
+                var unhandled = AttackEffectMessages.AttackEffectPlan.newBuilder()
+                        .setEffectId("test:unhandled")
+                        .build();
+                return AttackEffectProtobuf.encodePlan(unhandled);
             }
             ATTACK_EFFECT_CALLS.incrementAndGet();
-            return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.newBuilder()
-                    .setHandled(true).setExtraDamageHp(1).setEffectId("test:attack-cast")
-                    .addStatusEffects(AttackEffectMessages.StatusEffect.newBuilder()
-                            .setEffectId("minecraft:strength").setDurationTicks(20).setAmplifier(0)).build());
+            var status = AttackEffectMessages.StatusEffect.newBuilder()
+                    .setEffectId("minecraft:strength")
+                    .setDurationTicks(STATUS_DURATION_TICKS)
+                    .setAmplifier(0)
+                    .build();
+            var plan = AttackEffectMessages.AttackEffectPlan.newBuilder()
+                    .setHandled(true /* handled */)
+                    .setExtraDamageHp(1)
+                    .setEffectId("test:attack-cast")
+                    .addStatusEffects(status)
+                    .build();
+            return AttackEffectProtobuf.encodePlan(plan);
         }
     }
 
@@ -387,6 +761,12 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
                 new BodyTemplate.Reference(new DefinitionId(templateId), 1), structure, Realm.WANDERING_QI,
                 List.of(new AnatomyState.Part(part, hp)), List.of(), List.of(), List.of(), List.of(),
                 new VitalityState(0, 1000, 0, false), new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0));
+        // 模拟玩家也必须先入世，治疗集成只处理服务器世界中已登记的实体。
+        if (entity.getWorld().getEntityById(entity.getId()) != entity) {
+            // 按实体编号错开位置，避免多个样本在原点堆积触发挤压伤害和无敌帧。
+            entity.setPosition(entity.getX() + entity.getId() * MOCK_PLAYER_SPACING, entity.getY(), entity.getZ());
+            entity.getWorld().spawnEntity(entity);
+        }
     }
 
     private static BodySnapshot body(LivingEntity entity) {
@@ -401,6 +781,7 @@ public final class DamageGameTest implements FabricGameTest, BodyHealthHost {
 
     private static void assertClose(TestContext context, double actual, double expected, String message) {
         // 原版使用 float，身体使用 double，只容许对应的微小表示误差。
-        context.assertTrue(Math.abs(actual - expected) < 1e-5, message + ": actual=" + actual + ", expected=" + expected);
+        context.assertTrue(Math.abs(actual - expected) < EPSILON,
+                message + ": actual=" + actual + ", expected=" + expected);
     }
 }

@@ -68,8 +68,8 @@ public class VanillaDamageTest {
         }
 
         var injured = body.toBuilder().setPartStates(2, body.getPartStates(2).toBuilder().setHp(0)).build();
-        assertFalse(preferences.weights(injured, "minecraft:spider").containsKey("left_thigh"));
-        assertEquals(70, preferences.weights(injured, "minecraft:spider").get("right_thigh"), 0);
+        // 已毁部位保留原命中权重，不把它的概率转给健康的另一条腿。
+        assertEquals(preferences.weights(body, "minecraft:spider"), preferences.weights(injured, "minecraft:spider"));
         assertTrue(preferences.weights(body, "addon:unknown").values().stream().allMatch(weight -> weight == 1));
         var unknown = body.toBuilder().setTemplate(body.getTemplate().toBuilder().setId("addon:alien")).build();
         assertTrue(preferences.weights(unknown, "minecraft:spider").values().stream().allMatch(weight -> weight == 1));

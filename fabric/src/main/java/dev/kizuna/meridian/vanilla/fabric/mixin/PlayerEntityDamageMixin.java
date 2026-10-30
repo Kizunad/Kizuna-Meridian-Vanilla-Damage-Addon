@@ -1,20 +1,38 @@
 package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
+import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import net.minecraft.entity.Entity;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.player.PlayerEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(PlayerEntity.class)
 public abstract class PlayerEntityDamageMixin {
-    @Inject(method = "applyDamage", at = @At("HEAD"))
-    private void meridian$beginPlayerApplication(DamageSource source, float amount, CallbackInfo callback) {
+    @WrapMethod(method = "attack")
+    private void meridian$attackScope(Entity target, Operation<Void> original) {
+        // 包围整个出手及横扫循环，目标拒绝和异常退出也不重复或泄漏上下文。
+        var player = (PlayerEntity) (Object) this;
+        try (var ignored = VanillaStrikeContext.attack(player, player.getDamageSources().playerAttack(player))) {
+            original.call(target);
+        }
+        if (player instanceof ServerPlayerEntity serverPlayer) {
+            VanillaStrikeContext.attacked(serverPlayer);
+        }
+    }
+
+    @ModifyVariable(method = "applyDamage", at = @At("HEAD"), argsOnly = true)
+    private float meridian$beginPlayerApplication(float amount, DamageSource source, float originalAmount) {
         // 玩家覆盖了 applyDamage，建立自身调用范围以复用父类的护甲阶段注入。
-        VanillaDamageFabric.beginApplication((PlayerEntity) (Object) this);
+        return VanillaDamageFabric.beginApplication((PlayerEntity) (Object) this, source, amount);
     }
 
     @Inject(method = "applyDamage", at = @At("RETURN"))

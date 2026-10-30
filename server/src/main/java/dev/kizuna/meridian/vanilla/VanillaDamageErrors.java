@@ -4,8 +4,17 @@ import java.io.IOException;
 
 /** 原版伤害适配的诊断；核心失败仍使用 Protobuf 失败码。 */
 public final class VanillaDamageErrors {
+    public static final String MUSCLE = "muscle 必须声明合法标签、互不重复的左右部位、"
+            + "正数系数及做功参数";
+    public static final String STAGGER = "stagger 必须声明 (0, 1] 内的门槛与移动倍率、正数时长比例、"
+            + "不超过 60000 且下限不大于上限的整毫秒，以及非负的致伤类型系数";
+    public static final String MUSCLE_CAPACITY = "出手肌肉的基础力量或可用力量无效";
+    public static final String STRIKE_CONTEXT_MISSING = "近战伤害缺少出手上下文";
+    public static final String STRIKE_CONTEXT_ORDER = "近战出手上下文顺序错误";
+    public static final String DAMAGE_KIND_TAGS = "同一伤害类型不能属于多个 meridian:kind 标签";
     public static final String INVALID_INTEGRATION = "伤害效果集成认领重复、方案无效或宿主缺少健康回执";
     public static final String CONFIG = "原版伤害配置无效";
+    public static final String NOT_INITIALIZED = "原版伤害附属尚未初始化，不能读取伤害规则";
     public static final String CONFIG_IO = "无法读取或创建原版伤害配置";
     public static final String HOST_RESPONSE = "健康宿主返回了不匹配的响应或丢失了身体绑定";
     public static final String DAMAGE_FAILED = "原版伤害或死亡未能同步到身体";

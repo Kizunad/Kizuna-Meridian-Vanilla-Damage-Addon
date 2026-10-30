@@ -12,7 +12,13 @@ python3 scripts/check_docs.py
 
 安装使用 `fabric/build/libs/` 内不带 `sources` 或 `dev` 后缀的重映射 JAR，并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。模组本身运行在服务端，单机由集成服务器执行，不要求客户端安装伤害适配。
 
+`fabric/build.gradle` 的 `clearNestedJarCache` 在每次 `remapJar` 前删除 `fabric/build/loom-cache/temp/modprocessing`：Loom 只按坐标复用这里的嵌套 JAR，SNAPSHOT 坐标不变时会把旧的嵌套 JAR 打进发布 JAR。
+
 本附属不创建身体，玩家身体由必装 Human Addon 提供。八仓按适用端整套安装，开发运行统一应用 Framework 的 `scripts/full-assembly.gradle`。健康宿主和伤害效果集成都必须装配，缺接线启动报错；所有宿主明确返回该实体未绑定时才保留原版行为。本包不依赖 Human 内部类，其他生物附属采用相同接口。
+
+Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。编译读取相邻仓库的 Fabric 安装 JAR 及 shared/server 库，缺少任一产物直接报错；`fabric.mod.json` 声明 `meridian_technique`。构建与运行前应先构建功法库；Damage 源码不依赖具体功法实现。
+
+AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDamageFabric.preferences()` 返回已校验的整份规则（例如 `stagger().millis(...)` 估算一击能否造成僵直），`VanillaDamageFabric.estimateStrikeCoefficient(snapshot, entity, grip)` 用调用方已有的攻击者快照按[肌力系数](Damage-Rules.md)同一公式与夹取给出系数。虚脱由宿主在真实做功时判定，预估不包含这一项。
 
 ## 可信 Protobuf 入口
 
@@ -29,6 +35,8 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 入口由可信服务端代码调用，不是客户端可以上传任意剂量的网络通道。本适配以实体 UUID 作为 `subject_id`；宿主验证真实绑定、线程、权限、时间和身体归属，返回完整当前权威快照。
 
 每次事件在护甲阶段先查询所有宿主，确保恰好一个认领该身份。只有 `unbound = true` 表示可以继续寻找；明确失败、格式错误或多个认领立即拒绝，不尝试另一套账本。`prepare` 固定宿主、部位与 revision，供局部护甲结算使用；`PreparedHit.commit` 在原版抗性、附魔与吸收之后单次提交完整剂量。准备本身不扣身体 HP，完全吸收时直接丢弃。提交时使用同一宿主、固定请求 ID 和读到的身体 revision，框架继续校验、去重及原子提交。失败不重新随机选点，也不擅自刷新版本重试。
+
+近战在进入护甲阶段前，另对攻击者使用同样的唯一宿主查询规则。`exertStrike` 从做功前快照计算系数，再向同一宿主提交 `exertion`，内含普通 `ExertTissues` 命令；保留身体 ID、预期 revision 与请求 ID。做功成功只要求返回同一身体，能力不足按力竭系数命中，其他错误抛出。完整规则、标签与配置见[肌肉出力](Damage-Rules.md#肌肉出力)，交付证据见[实现验证](Muscle-Validation.md)。
 
 ## 攻击方附效入口
 

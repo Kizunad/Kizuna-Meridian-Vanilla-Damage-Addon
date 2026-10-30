@@ -13,8 +13,10 @@ import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostResponse;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.ConfirmBodyDeath;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageBody;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
+import dev.kizuna.meridian.protocol.pb.HealthMessages.HealthResult;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.RequestEnvelope;
+import dev.kizuna.meridian.protocol.pb.MeridianMessages.FailureCode;
 import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
@@ -60,6 +62,62 @@ public final class VanillaDamageBridge {
     public Optional<BodySnapshot> inspectBody(String subjectId) {
         // 攻击方只读查询复用同一唯一宿主规则，不向提供方暴露可写身体入口。
         return inspect(subjectId).map(Binding::body);
+    }
+
+    public double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip) {
+        // 先用权威快照计算系数，再由同一宿主原子提交整组做功；关闭时不查询或记账。
+        MuscleRules rules = preferences.muscle();
+        if (!rules.enabled()) {
+            return 1;
+        }
+        Optional<Binding> found = inspect(subjectId);
+        if (found.isEmpty()) {
+            return 1;
+        }
+        Binding binding = found.get();
+        BodySnapshot body = binding.body();
+        MuscleRules.Plan plan = rules.plan(body, mainArm, grip);
+        if (plan.loads().getLoadsCount() == 0) {
+            return plan.coefficient();
+        }
+        HealthHostRequest request = exertionRequest(subjectId, body, plan);
+        HealthHostResponse response = HealthHostProtobuf.decodeResponse(
+                binding.host().exchange(HealthHostProtobuf.encodeRequest(request)));
+        if (!response.getRequestId().equals(request.getRequestId())) {
+            throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HOST_RESPONSE);
+        }
+        if (response.hasFailure()) {
+            FailureCode code = response.getFailure().getCode();
+            if (code == FailureCode.TISSUE_LOAD_EXCEEDED || code == FailureCode.MODULE_UNAVAILABLE) {
+                return rules.coefficients().exhausted();
+            }
+            throw VanillaDamageErrors.hostRejected(code);
+        }
+        if (!response.hasBody() || !response.getBody().getId().equals(body.getId())) {
+            throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HOST_RESPONSE);
+        }
+        return plan.coefficient();
+    }
+
+    private static HealthHostRequest exertionRequest(String subjectId, BodySnapshot body, MuscleRules.Plan plan) {
+        // 身份与版本固定在做功前读取的快照，宿主不能替调用方刷新版本。
+        String requestId = UUID.randomUUID().toString();
+        BodyCommand command = BodyCommand.newBuilder()
+                .setBodyId(body.getId())
+                .setExpectedRevision(body.getRevision())
+                .setExertTissues(plan.loads())
+                .build();
+        RequestEnvelope exertion = RequestEnvelope.newBuilder()
+                .setProtocolVersion(1)
+                .setRequestId(requestId)
+                .setBodyCommand(command)
+                .build();
+        return HealthHostRequest.newBuilder()
+                .setProtocolVersion(1)
+                .setRequestId(requestId)
+                .setSubjectId(subjectId)
+                .setExertion(exertion)
+                .build();
     }
 
     public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
@@ -168,7 +226,7 @@ public final class VanillaDamageBridge {
         }
         BodySnapshot body = binding.get().body();
         if (body.getVitality().getDead()) {
-            // 死体伤势保留；原版重生尚未赋予身体复活的语义。
+            // 死态不再接受伤害；Human 显式复活后重新进入正常命中路径。
             return Optional.empty();
         }
 
@@ -200,6 +258,18 @@ public final class VanillaDamageBridge {
                     binding.body().getTemplate().getId(), hit.getPartId()));
         }
 
+        public Optional<HealthTarget> target() {
+            // 调试观察方读取已经固定的命中目标，不重新抽取部位。
+            return target;
+        }
+
+        public long staggerMillis(double damageAfterEffects) {
+            // 护甲后剂量与命中模块上限同为身体 HP；没有命中目标时无从比较，不产生僵直。
+            double doseHp = preferences.damageHp(damageAfterEffects);
+            BodySnapshot body = binding.body();
+            return target.map(hit -> preferences.stagger().millis(body, hit, kind, doseHp)).orElse(0L);
+        }
+
         public double remainingVanillaDamage(double rawVanillaHp, double armor, double toughness,
                                              OptionalDouble remainingDurabilityRatio) {
             // 先换算身体 HP 再做单件减伤，返回原版单位让其继续抗性、附魔和吸收结算。
@@ -218,61 +288,92 @@ public final class VanillaDamageBridge {
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
             }
-            var damage = DamageBody.newBuilder().setSourceId("meridian_vanilla:damage")
-                    .setDamageType(sourceId).setKind(kind)
+            var damage = DamageBody.newBuilder()
+                    .setSourceId("meridian_vanilla:damage")
+                    .setDamageType(sourceId)
+                    .setKind(kind)
                     .setDamageHp(preferences.damageHp(damageAfterEffects));
             target.ifPresent(damage::setHit);
             if (!damage.hasHit()) {
-                // 无存活目标是身体状态；交由核心验证，不将其当作缺少集成。
+                // 无实际目标交由核心验证，不将其当作缺少集成。
                 committed = true;
-                return new CommitResult(apply(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage)), false);
+                return submitDamage(damage.build());
             }
-            BodyDamageIntegration selected = null;
-            DamageIntegrationPlan plan = null;
-            var context = DamageIntegrationContext.newBuilder().setSubjectId(subjectId).setBody(binding.body())
-                    .setDamage(damage).setBypassesDeathProtection(bypassesDeathProtection).build();
-            if (damage.hasHit()) {
-                for (BodyDamageIntegration integration : integrations) {
-                    var candidate = DamageIntegrationProtobuf.decodePlan(integration.prepare(
-                            DamageIntegrationProtobuf.encodeContext(context)));
-                    if (!candidate.getHandled()) {
-                        continue;
-                    }
-                    if (selected != null || candidate.getRemainingDamageHp() > damage.getDamageHp()
-                            || (bypassesDeathProtection && candidate.hasDeathProtection())) {
-                        throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
-                    }
-                    selected = integration;
-                    plan = candidate;
-                }
-            }
+            var context = DamageIntegrationContext.newBuilder()
+                    .setSubjectId(subjectId)
+                    .setBody(binding.body())
+                    .setDamage(damage)
+                    .setBypassesDeathProtection(bypassesDeathProtection)
+                    .build();
+            PreparedIntegration selected = selectIntegration(context);
             // 宿主响应不确定时也不从此临时上下文重发，避免给同一事件换一个请求身份。
             committed = true;
             if (selected == null) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_INTEGRATION);
             }
+            DamageIntegrationPlan plan = selected.plan();
+            CommitResult result = applyPlan(context.getDamage(), plan);
+            var notification = DamageIntegrationCommit.newBuilder()
+                    .setContext(context)
+                    .setPlan(plan)
+                    .setBody(result.body())
+                    .setDeathPrevented(result.deathPrevented())
+                    .build();
+            selected.integration().committed(DamageIntegrationProtobuf.encodeCommit(notification));
+            return result;
+        }
 
-            BodySnapshot body = binding.body();
-            boolean deathPrevented = false;
-            if (plan.getRemainingDamageHp() > 0) {
-                damage.setDamageHp(plan.getRemainingDamageHp());
-                if (plan.hasDeathProtection()) {
-                    damage.setDeathProtection(plan.getDeathProtection());
+        private PreparedIntegration selectIntegration(DamageIntegrationContext context) {
+            // 同次伤害只接受一方认领，且集成方不能提高剂量或绕过禁用的保命来源。
+            PreparedIntegration selected = null;
+            byte[] payload = DamageIntegrationProtobuf.encodeContext(context);
+            for (BodyDamageIntegration integration : integrations) {
+                var candidate = DamageIntegrationProtobuf.decodePlan(integration.prepare(payload));
+                if (!candidate.getHandled()) {
+                    continue;
                 }
-                var response = applyResponse(subjectId, binding, BodyCommand.newBuilder().setDamageBody(damage));
-                if (!response.hasHealth()) {
+                if (selected != null || candidate.getRemainingDamageHp() > context.getDamage().getDamageHp()
+                        || (context.getBypassesDeathProtection() && candidate.hasDeathProtection())) {
                     throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
                 }
-                body = response.getBody();
-                deathPrevented = response.getHealth().getDeathPrevented();
+                selected = new PreparedIntegration(integration, candidate);
             }
-            selected.committed(DamageIntegrationProtobuf.encodeCommit(DamageIntegrationCommit.newBuilder()
-                    .setContext(context).setPlan(plan).setBody(body).setDeathPrevented(deathPrevented).build()));
-            return new CommitResult(body, deathPrevented);
+            return selected;
         }
+
+        private CommitResult applyPlan(DamageBody original, DamageIntegrationPlan plan) {
+            // 完全吸收不提交零剂量；其余情况携带保命方案一次提交完整伤害。
+            double remainingDamageHp = plan.getRemainingDamageHp();
+            if (remainingDamageHp == 0) {
+                BodySnapshot unchanged = binding.body();
+                return new CommitResult(unchanged, unchanged, HealthResult.getDefaultInstance());
+            }
+            var damage = original.toBuilder().setDamageHp(remainingDamageHp);
+            if (plan.hasDeathProtection()) {
+                damage.setDeathProtection(plan.getDeathProtection());
+            }
+            return submitDamage(damage.build());
+        }
+
+        private CommitResult submitDamage(DamageBody damage) {
+            // 快照和回执来自同一响应，观察器不会再读一次身体或猜测保命是否发生。
+            var command = BodyCommand.newBuilder().setDamageBody(damage);
+            var response = applyResponse(subjectId, binding, command);
+            if (!response.hasHealth()) {
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+            }
+            return new CommitResult(binding.body(), response.getBody(), response.getHealth());
+        }
+
+        private record PreparedIntegration(BodyDamageIntegration integration, DamageIntegrationPlan plan) { }
     }
 
-    public record CommitResult(BodySnapshot body, boolean deathPrevented) { }
+    public record CommitResult(BodySnapshot before, BodySnapshot body, HealthResult health) {
+        public boolean deathPrevented() {
+            // 同一固定回执同时供图腾副作用与只读伤害观察方使用。
+            return health.getDeathPrevented();
+        }
+    }
 
     public Optional<BodySnapshot> died(String subjectId) {
         // 原版死亡只确认死态，不用虚构的大额伤害覆盖已有局部伤势。

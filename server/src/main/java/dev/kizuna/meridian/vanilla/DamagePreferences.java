@@ -20,23 +20,29 @@ import java.util.Optional;
 
 /** 怪物偏好只决定选点，内部连带伤与死亡阈值交给生物内容包。 */
 public final class DamagePreferences {
+    private static final double MAX_CONFIG_VALUE = 1000;
     private final double hpPerVanillaHp;
     private final Map<String, Map<String, List<String>>> anatomies;
     private final Map<String, Map<String, Double>> attackers;
     private final ArmorRules armor;
     private final boolean attackEffectsEnabled;
     private final double maxExtraRatio;
+    private final MuscleRules muscle;
+    private final StaggerRules stagger;
 
     private DamagePreferences(double hpPerVanillaHp, Map<String, Map<String, List<String>>> anatomies,
                               Map<String, Map<String, Double>> attackers, ArmorRules armor,
-                              boolean attackEffectsEnabled, double maxExtraRatio) {
+                              CombatSettings combat) {
         // 配置在启动时固定，实际选点仍按每次伤害时的身体模块与 HP 计算。
         this.hpPerVanillaHp = hpPerVanillaHp;
         this.anatomies = Map.copyOf(anatomies);
         this.attackers = Map.copyOf(attackers);
         this.armor = armor;
-        this.attackEffectsEnabled = attackEffectsEnabled;
-        this.maxExtraRatio = maxExtraRatio;
+        AttackSettings attack = combat.attack();
+        this.attackEffectsEnabled = attack.enabled();
+        this.maxExtraRatio = attack.maxExtraRatio();
+        this.muscle = combat.muscle();
+        this.stagger = combat.stagger();
     }
 
     public static DamagePreferences load(Path path) {
@@ -68,10 +74,20 @@ public final class DamagePreferences {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.SCALE);
         }
         double scale = scaleNumber.doubleValue();
-        if (!Double.isFinite(scale) || scale <= 0 || scale > 1000) {
+        if (!Double.isFinite(scale) || scale <= 0 || scale > MAX_CONFIG_VALUE) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.SCALE);
         }
+        var anatomies = parseAnatomies(config);
+        var attackers = parseAttackers(config);
+        ArmorRules armor = ArmorRules.parse(configTable(config, "armor", VanillaDamageErrors.ARMOR_COVERAGE));
+        AttackSettings attack = parseAttackSettings(config);
+        MuscleRules muscle = MuscleRules.parse(configTable(config, "muscle", VanillaDamageErrors.MUSCLE));
+        StaggerRules stagger = StaggerRules.parse(configTable(config, "stagger", VanillaDamageErrors.STAGGER));
+        var combat = new CombatSettings(attack, muscle, stagger);
+        return new DamagePreferences(scale, anatomies, attackers, armor, combat);
+    }
 
+    private static Map<String, Map<String, List<String>>> parseAnatomies(TomlTable config) {
         // 身体模板声明分组；同一部位只能属于一个组，改造新增的部位归 other。
         var anatomies = new HashMap<String, Map<String, List<String>>>();
         Object anatomyValue = config.get("anatomies");
@@ -83,28 +99,37 @@ public final class DamagePreferences {
                 if (!(anatomyTable.get(List.of(templateId)) instanceof TomlTable groups)) {
                     throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_GROUPS + ": " + templateId);
                 }
-                var partGroups = new LinkedHashMap<String, List<String>>();
-                var usedParts = new HashSet<String>();
-                for (String group : groups.keySet()) {
-                    if (!(groups.get(List.of(group)) instanceof TomlArray entries)) {
-                        throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_ARRAY + ": " + group);
-                    }
-                    var partIds = new ArrayList<String>();
-                    for (int index = 0; index < entries.size(); index++) {
-                        if (!(entries.get(index) instanceof String partId)) {
-                            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_ARRAY + ": " + group);
-                        }
-                        if (partId.isBlank() || !usedParts.add(partId)) {
-                            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DUPLICATE_PART + ": " + partId);
-                        }
-                        partIds.add(partId);
-                    }
-                    partGroups.put(group, List.copyOf(partIds));
-                }
-                anatomies.put(templateId, Map.copyOf(partGroups));
+                anatomies.put(templateId, parsePartGroups(groups));
             }
         }
+        return Map.copyOf(anatomies);
+    }
 
+    private static Map<String, List<String>> parsePartGroups(TomlTable groups) {
+        // 跨组核对部位唯一性，保存配置顺序以保持随机选点行为。
+        var partGroups = new LinkedHashMap<String, List<String>>();
+        var usedParts = new HashSet<String>();
+        for (String group : groups.keySet()) {
+            if (!(groups.get(List.of(group)) instanceof TomlArray entries)) {
+                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_ARRAY + ": " + group);
+            }
+            var partIds = new ArrayList<String>();
+            for (int index = 0; index < entries.size(); index++) {
+                if (!(entries.get(index) instanceof String partId)) {
+                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_ARRAY + ": " + group);
+                }
+                if (partId.isBlank() || !usedParts.add(partId)) {
+                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DUPLICATE_PART + ": " + partId);
+                }
+                partIds.add(partId);
+            }
+            partGroups.put(group, List.copyOf(partIds));
+        }
+        return Map.copyOf(partGroups);
+    }
+
+    private static Map<String, Map<String, Double>> parseAttackers(TomlTable config) {
+        // 攻击者权重与身体构型分开校验，未知类型仍由选点规则处理。
         var attackers = new HashMap<String, Map<String, Double>>();
         Object attackerValue = config.get("attackers");
         if (attackerValue != null) {
@@ -119,48 +144,25 @@ public final class DamagePreferences {
                 for (String group : profile.keySet()) {
                     Object number = profile.get(List.of(group));
                     if (!(number instanceof Number)) {
-                        throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.WEIGHT + ": " + entityId + "/" + group);
+                        throw VanillaDamageErrors.invalidConfig(
+                                VanillaDamageErrors.WEIGHT + ": " + entityId + "/" + group);
                     }
                     double weight = ((Number) number).doubleValue();
-                    if (!Double.isFinite(weight) || weight < 0 || weight > 1000) {
-                        throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.WEIGHT + ": " + entityId + "/" + group);
+                    if (!Double.isFinite(weight) || weight < 0 || weight > MAX_CONFIG_VALUE) {
+                        throw VanillaDamageErrors.invalidConfig(
+                                VanillaDamageErrors.WEIGHT + ": " + entityId + "/" + group);
                     }
                     weights.put(group, weight);
                 }
                 attackers.put(entityId, Map.copyOf(weights));
             }
         }
-        // 已有配置缺少 armor 时从内置资源读取此新增节，不覆盖用户的怪物偏好。
-        Object armorValue = config.get("armor");
-        if (armorValue == null) {
-            try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
-                if (input == null) {
-                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
-                }
-                armorValue = Toml.parse(input).getTable("armor");
-            } catch (IOException failure) {
-                throw VanillaDamageErrors.configReadFailed(failure);
-            }
-        }
-        if (!(armorValue instanceof TomlTable armorTable)) {
-            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ARMOR_COVERAGE);
-        }
+        return Map.copyOf(attackers);
+    }
 
-        // 附效配置缺省时读取内置默认值，已有服务器配置无需被启动时重写。
-        Object attackEffectsValue = config.get("attack_effects");
-        if (attackEffectsValue == null) {
-            try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
-                if (input == null) {
-                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
-                }
-                attackEffectsValue = Toml.parse(input).getTable("attack_effects");
-            } catch (IOException failure) {
-                throw VanillaDamageErrors.configReadFailed(failure);
-            }
-        }
-        if (!(attackEffectsValue instanceof TomlTable attackEffects)) {
-            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS);
-        }
+    private static AttackSettings parseAttackSettings(TomlTable config) {
+        // 显式配置必须完整合法，缺节时使用内置规则。
+        TomlTable attackEffects = configTable(config, "attack_effects", VanillaDamageErrors.ATTACK_EFFECTS);
         Object enabledValue = attackEffects.get("enabled");
         if (!(enabledValue instanceof Boolean enabled)) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_ENABLED);
@@ -170,10 +172,42 @@ public final class DamagePreferences {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_RATIO);
         }
         double maxExtraRatio = ratioNumber.doubleValue();
-        if (!Double.isFinite(maxExtraRatio) || maxExtraRatio < 0 || maxExtraRatio > 1000) {
+        if (!Double.isFinite(maxExtraRatio) || maxExtraRatio < 0 || maxExtraRatio > MAX_CONFIG_VALUE) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ATTACK_EFFECTS_RATIO);
         }
-        return new DamagePreferences(scale, anatomies, attackers, ArmorRules.parse(armorTable), enabled, maxExtraRatio);
+        return new AttackSettings(enabled, maxExtraRatio);
+    }
+
+    private record AttackSettings(boolean enabled, double maxExtraRatio) { }
+    private record CombatSettings(AttackSettings attack, MuscleRules muscle, StaggerRules stagger) { }
+
+    private static TomlTable configTable(TomlTable config, String key, String error) {
+        // 旧配置缺少新增节时只读取默认值，不重写服主已有文件。
+        Object value = config.get(key);
+        if (value == null) {
+            try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
+                if (input == null) {
+                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
+                }
+                return Toml.parse(input).getTable(key);
+            } catch (IOException failure) {
+                throw VanillaDamageErrors.configReadFailed(failure);
+            }
+        }
+        if (!(value instanceof TomlTable table)) {
+            throw VanillaDamageErrors.invalidConfig(error);
+        }
+        return table;
+    }
+
+    public MuscleRules muscle() {
+        // 肌肉规则保持与 Minecraft 无关，供宿主和整体回归共用。
+        return muscle;
+    }
+
+    public StaggerRules stagger() {
+        // 僵直换算与 Minecraft 无关，伤害提交与 AI 预估共用同一规则。
+        return stagger;
     }
 
     public ArmorRules armor() {
@@ -210,8 +244,8 @@ public final class DamagePreferences {
     }
 
     public Map<String, Double> weights(BodySnapshot body, String attackerId) {
-        // 只选仍有 HP 的实际部位，移除的组织和新版模板不会替换已有身体的构型。
-        List<String> candidates = body.getPartStatesList().stream().filter(part -> part.getHp() > 0)
+        // 已毁部位仍可被命中，由身体模板策略处理溢出；实际移除的部位才退出候选。
+        List<String> candidates = body.getPartStatesList().stream()
                 .map(part -> part.getId()).toList();
         Map<String, List<String>> anatomy = anatomies.get(body.getTemplate().getId());
         Map<String, Double> profile = attackers.get(attackerId);
@@ -231,7 +265,7 @@ public final class DamagePreferences {
             }
         }
 
-        // 未配置生物、未配置攻击者或偏好组全部缺失时，退回实际存活部位等概率。
+        // 未配置生物、未配置攻击者或偏好组全部缺失时，实际存在的部位等概率。
         double totalWeight = weights.values().stream().mapToDouble(Double::doubleValue).sum();
         if (totalWeight == 0) {
             candidates.forEach(part -> weights.put(part, 1.0));

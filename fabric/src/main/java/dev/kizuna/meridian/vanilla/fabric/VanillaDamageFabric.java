@@ -6,14 +6,20 @@ import dev.kizuna.meridian.vanilla.fabric.mixin.TotemAccess;
 import dev.kizuna.meridian.vanilla.ArmorRules;
 import dev.kizuna.meridian.vanilla.AttackEffectProvider;
 import dev.kizuna.meridian.vanilla.DamagePreferences;
+import dev.kizuna.meridian.vanilla.MuscleRules;
 import dev.kizuna.meridian.vanilla.VanillaDamageBridge;
 import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
 import dev.kizuna.meridian.vanilla.VanillaDamageKinds;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
+import dev.kizuna.meridian.protocol.pb.BodyMessages;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
+import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
+import dev.kizuna.meridian.technique.server.TechniqueService;
 import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.CommonLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -28,6 +34,7 @@ import net.minecraft.item.AxeItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.SwordItem;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.tag.DamageTypeTags;
 import net.minecraft.util.Identifier;
 import org.slf4j.Logger;
@@ -36,44 +43,116 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /** 在原版护甲阶段固定部位，保留后续非护甲结算，并向身体提交一次伤害。 */
 public final class VanillaDamageFabric implements ModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("meridian_vanilla_damage");
     private static final Map<LivingEntity, DamageSource> pendingDeaths = new IdentityHashMap<>();
-    private static final Map<LivingEntity, Deque<AttackEffectMessages.StatusEffect>> pendingStatusEffects = new IdentityHashMap<>();
+    private static final Map<LivingEntity, Deque<AttackEffectMessages.StatusEffect>> pendingStatusEffects =
+            new IdentityHashMap<>();
     private static final Map<LivingEntity, Deque<DamageFrame>> applications = new IdentityHashMap<>();
+    private static final List<DamageObserver> damageObservers = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
+    private static DamagePreferences preferences;
+
+    /** 只读伤害通知；观察方不能改变当前结算。 */
+    @FunctionalInterface
+    public interface DamageObserver {
+        void onDamage(DamageEvent event);
+    }
+
+    /** 身体事务提交后的固定伤害事实。 */
+    public record DamageEvent(LivingEntity target, LivingEntity attacker, DamageSource source,
+                              DamageInput input, VanillaDamageBridge.CommitResult result) { }
+
+    public record DamageInput(DamageKind kind, double rawDamage, double damageAfterEffects,
+                              Optional<HealthTarget> hit) { }
+
+    public static DamagePreferences preferences() {
+        // AI 预估复用伤害结算同一份已校验规则，只读，不能替换或改写配置。
+        if (preferences == null) {
+            throw new IllegalStateException(VanillaDamageErrors.NOT_INITIALIZED);
+        }
+        return preferences;
+    }
+
+    public static void registerDamageObserver(DamageObserver observer) {
+        // 观察方只订阅提交后的事实，不能替换或短路原版伤害流程。
+        damageObservers.add(java.util.Objects.requireNonNull(observer));
+    }
 
     @Override
     public void onInitialize() {
         // 服务入口是可信进程内协议，不为客户端开放任意伤害网络包。
         var hosts = FabricLoader.getInstance().getEntrypoints("meridian_health_host", BodyHealthHost.class);
-        var preferences = DamagePreferences.load(FabricLoader.getInstance().getConfigDir()
+        preferences = DamagePreferences.load(FabricLoader.getInstance().getConfigDir()
                 .resolve("meridian-vanilla-damage.toml"));
-        var integrations = FabricLoader.getInstance().getEntrypoints("meridian_damage_integration", BodyDamageIntegration.class);
+        var integrations = FabricLoader.getInstance().getEntrypoints(
+                "meridian_damage_integration", BodyDamageIntegration.class);
         var attackEffectProviders = FabricLoader.getInstance().getEntrypoints(
                 AttackEffectProvider.ENTRYPOINT, AttackEffectProvider.class);
         bridge = new VanillaDamageBridge(hosts, preferences, integrations, attackEffectProviders);
+        CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
+            if (!client) {
+                VanillaDamageTypeTags.validate(registries.get(RegistryKeys.DAMAGE_TYPE));
+            }
+        });
         ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> confirmDeath(entity));
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.END_SERVER_TICK.register(server ->
+                VanillaStrikeContext.expireSwings(server.getOverworld().getTime()));
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
             // 服务器生命周期结束后不持有旧实体与未完成调用的临时引用。
             pendingDeaths.clear();
             pendingStatusEffects.clear();
             applications.clear();
             bridge.clearAttackEffectState();
+            VanillaStrikeContext.clear();
         });
     }
 
-    public static void beginApplication(LivingEntity entity) {
-        // 每层 applyDamage 持有自己的命中；嵌套伤害不能覆盖外层已选定的部位。
+    public static float beginApplication(LivingEntity entity, DamageSource source, float rawDamage) {
+        // 在任何护甲结算前乘一次；攻击者做功与目标有无身体无关。
         if (entity.getWorld().isClient) {
-            return;
+            return rawDamage;
         }
-        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>()).push(new DamageFrame());
+        double coefficient = 1;
+        if (rawDamage > 0 && source.isIn(VanillaDamageTypeTags.MELEE)
+                && source.getAttacker() instanceof LivingEntity attacker) {
+            coefficient = VanillaStrikeContext.coefficient(attacker, source);
+        }
+        double scaledDamage = rawDamage * coefficient;
+        if (!Double.isFinite(scaledDamage) || scaledDamage > Float.MAX_VALUE) {
+            throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+        }
+        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>()).push(new DamageFrame(rawDamage));
+        return (float) scaledDamage;
+    }
+
+    static double strikeCoefficient(LivingEntity attacker, DamageSource source) {
+        // 出手侧由可信主手侧和伤害标签解释，不依赖目标有没有经脉身体。
+        if (!source.isIn(VanillaDamageTypeTags.MELEE)) {
+            return 1;
+        }
+        return bridge.exertStrike(attacker.getUuidAsString(), mainArm(attacker), VanillaDamageTypeTags.grip(source));
+    }
+
+    public static double estimateStrikeCoefficient(BodyMessages.BodySnapshot attacker, LivingEntity entity,
+                                                   MuscleRules.Grip grip) {
+        // AI 预估读调用方已有的快照，与命中结算同一份肌力规则和夹取；不查询宿主、不提交做功。
+        return preferences().muscle().plan(attacker, mainArm(entity), grip).coefficient();
+    }
+
+    private static MuscleRules.Arm mainArm(LivingEntity attacker) {
+        // 原版主手侧映射到肌力规则的左右臂分组。
+        if (attacker.getMainArm() == net.minecraft.util.Arm.LEFT) {
+            return MuscleRules.Arm.LEFT;
+        }
+        return MuscleRules.Arm.RIGHT;
     }
 
     public static void endApplication(LivingEntity entity) {
@@ -96,6 +175,35 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         String sourceId = source.getTypeRegistryEntry().getKey().map(key -> key.getValue().toString())
                 .orElse("meridian_vanilla:unregistered");
+        try {
+            AttackSource attack = attackSource(source, sourceId);
+            Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getUuidAsString(),
+                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble());
+            if (prepared.isEmpty()) {
+                return Optional.empty();
+            }
+            VanillaDamageBridge.PreparedHit hit = prepared.get();
+            DamageFrame frame = frames.peek();
+            var effect = attackEffect(entity, source, attack, frame.rawDamage);
+            AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
+            float remainingDamage = localArmorDamage(entity, source, hit, dose.amount());
+            frame.hit = hit;
+            frame.kind = attack.kind();
+            frame.attackEffect = dose.effect();
+            return Optional.of(remainingDamage);
+        } catch (RuntimeException failure) {
+            // 必需接线失败不能改走原版 HP；记录上下文后向调用方暴露错误。
+            LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
+                    + " source=" + sourceId + " rawHp=" + rawDamage, failure);
+            throw failure;
+        }
+    }
+
+    private record AttackSource(String id, String attackerId, Entity attacker, DamageKind kind) { }
+    private record AttackDose(double amount, VanillaDamageBridge.AttackEffectResolution effect) { }
+
+    private static AttackSource attackSource(DamageSource source, String sourceId) {
+        // 显式标签优先；没有标签时保留原版来源和主手武器分类。
         Entity attacker = source.getAttacker();
         String attackerId = "minecraft:unknown";
         boolean edgedWeapon = false;
@@ -106,79 +214,78 @@ public final class VanillaDamageFabric implements ModInitializer {
                 edgedWeapon = weapon instanceof SwordItem || weapon instanceof AxeItem;
             }
         }
-
-        try {
-            DamageKind kind = VanillaDamageKinds.classify(sourceId, attackerId, edgedWeapon);
-            Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getUuidAsString(), sourceId, attackerId,
-                    kind, entity.getRandom().nextDouble());
-            if (prepared.isEmpty()) {
-                return Optional.empty();
-            }
-            VanillaDamageBridge.PreparedHit hit = prepared.get();
-            VanillaDamageBridge.AttackEffectResolution attackEffect = null;
-            boolean melee = isMeleeSource(sourceId);
-            if (melee && attacker instanceof LivingEntity livingAttacker) {
-                try {
-                    attackEffect = bridge.prepareAttackEffect(entity.getUuidAsString(), livingAttacker.getUuidAsString(),
-                            sourceId, kind, rawDamage, true, entity.getWorld().getTime()).orElse(null);
-                    if (attackEffect != null && attackEffect.truncated()) {
-                        LOGGER.warn("{} target={} source={} rawHp={} extraHp={} maxRatio={}",
-                                VanillaDamageErrors.ATTACK_EFFECT_PLAN, entity.getUuidAsString(), sourceId,
-                                rawDamage, attackEffect.extraDamageHp(), "configured");
-                    }
-                } catch (RuntimeException failure) {
-                    // 攻击方附效是可选增益；提供方故障不能旁路原版伤害。
-                    LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_PROVIDER + " target="
-                            + entity.getUuidAsString() + " source=" + sourceId, failure);
-                    attackEffect = null;
-                }
-            }
-            double rawWithAttackEffect = rawDamage;
-            if (attackEffect != null) {
-                rawWithAttackEffect += attackEffect.extraDamageHp();
-                if (!Double.isFinite(rawWithAttackEffect) || rawWithAttackEffect <= 0
-                        || rawWithAttackEffect > Float.MAX_VALUE) {
-                    LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_PLAN + " target=" + entity.getUuidAsString()
-                            + " source=" + sourceId + " rawHp=" + rawDamage, new IllegalArgumentException());
-                    attackEffect = null;
-                    rawWithAttackEffect = rawDamage;
-                }
-            }
-            float remainingDamage = (float) rawWithAttackEffect;
-            if (!source.isIn(DamageTypeTags.BYPASSES_ARMOR)) {
-                // 只读取正确槽位中这件护甲的数值，不读取实体全身属性或其他装备。
-                Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
-                if (coveredSlot.isPresent()) {
-                    EquipmentSlot slot = switch (coveredSlot.get()) {
-                        case HEAD -> EquipmentSlot.HEAD;
-                        case CHEST -> EquipmentSlot.CHEST;
-                        case LEGS -> EquipmentSlot.LEGS;
-                        case FEET -> EquipmentSlot.FEET;
-                    };
-                    var stack = entity.getEquippedStack(slot);
-                    if (stack.getItem() instanceof ArmorItem armor && armor.getSlotType() == slot) {
-                        // 读取本次磨损前的剩余比例；无耐久及不可损坏物品使用固定系数 1。
-                        OptionalDouble remainingDurability = OptionalDouble.empty();
-                        if (stack.isDamageable()) {
-                            double remainingRatio = 1 - stack.getDamage() / (double) stack.getMaxDamage();
-                            remainingDurability = OptionalDouble.of(Math.max(0, Math.min(1, remainingRatio)));
-                        }
-                        remainingDamage = (float) hit.remainingVanillaDamage(rawWithAttackEffect,
-                                armorAttribute(stack, slot, EntityAttributes.GENERIC_ARMOR),
-                                armorAttribute(stack, slot, EntityAttributes.GENERIC_ARMOR_TOUGHNESS),
-                                remainingDurability);
-                    }
-                }
-            }
-            frames.peek().hit = hit;
-            frames.peek().attackEffect = attackEffect;
-            return Optional.of(remainingDamage);
-        } catch (RuntimeException failure) {
-            // 必需接线失败不能改走原版 HP；记录上下文后向调用方暴露错误。
-            LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
-                    + " source=" + sourceId + " rawHp=" + rawDamage, failure);
-            throw failure;
+        Optional<DamageKind> taggedKind = VanillaDamageTypeTags.kind(source);
+        DamageKind kind;
+        if (taggedKind.isPresent()) {
+            kind = taggedKind.get();
+        } else {
+            kind = VanillaDamageKinds.classify(sourceId, attackerId, edgedWeapon);
         }
+        return new AttackSource(sourceId, attackerId, attacker, kind);
+    }
+
+    private static VanillaDamageBridge.AttackEffectResolution attackEffect(
+            LivingEntity target, DamageSource source, AttackSource attack, float rawDamage) {
+        // 附效读取乘系数前的原版剂量，故障保持原版伤害路径。
+        if (!source.isIn(VanillaDamageTypeTags.MELEE) || !(attack.attacker() instanceof LivingEntity attacker)) {
+            return null;
+        }
+        try {
+            var effect = bridge.prepareAttackEffect(target.getUuidAsString(), attacker.getUuidAsString(),
+                    attack.id(), attack.kind(), rawDamage, true /* melee */, target.getWorld().getTime()).orElse(null);
+            if (effect != null && effect.truncated()) {
+                LOGGER.warn("{} target={} source={} rawHp={} extraHp={} maxRatio={}",
+                        VanillaDamageErrors.ATTACK_EFFECT_PLAN, target.getUuidAsString(), attack.id(),
+                        rawDamage, effect.extraDamageHp(), "configured");
+            }
+            return effect;
+        } catch (RuntimeException failure) {
+            LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_PROVIDER + " target="
+                    + target.getUuidAsString() + " source=" + attack.id(), failure);
+            return null;
+        }
+    }
+
+    private static AttackDose attackDose(LivingEntity target, String sourceId, float scaledDamage,
+                                        VanillaDamageBridge.AttackEffectResolution effect) {
+        // 附加伤害在肌肉系数之后合并，非法合计量只丢弃附效。
+        if (effect == null) {
+            return new AttackDose(scaledDamage, null);
+        }
+        double total = scaledDamage + effect.extraDamageHp();
+        if (!Double.isFinite(total) || total <= 0 || total > Float.MAX_VALUE) {
+            LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_PLAN + " target=" + target.getUuidAsString()
+                    + " source=" + sourceId + " rawHp=" + scaledDamage, new IllegalArgumentException());
+            return new AttackDose(scaledDamage, null);
+        }
+        return new AttackDose(total, effect);
+    }
+
+    private static float localArmorDamage(LivingEntity entity, DamageSource source,
+                                          VanillaDamageBridge.PreparedHit hit, double damage) {
+        // 只读取命中槽位的单件护甲，不叠加其他装备或实体固有属性。
+        Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
+        if (source.isIn(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
+            return (float) damage;
+        }
+        EquipmentSlot slot = switch (coveredSlot.get()) {
+            case HEAD -> EquipmentSlot.HEAD;
+            case CHEST -> EquipmentSlot.CHEST;
+            case LEGS -> EquipmentSlot.LEGS;
+            case FEET -> EquipmentSlot.FEET;
+        };
+        var stack = entity.getEquippedStack(slot);
+        if (!(stack.getItem() instanceof ArmorItem armor) || armor.getSlotType() != slot) {
+            return (float) damage;
+        }
+        OptionalDouble remainingDurability = OptionalDouble.empty();
+        if (stack.isDamageable()) {
+            double remainingRatio = 1 - stack.getDamage() / (double) stack.getMaxDamage();
+            remainingDurability = OptionalDouble.of(Math.max(0, Math.min(1, remainingRatio)));
+        }
+        return (float) hit.remainingVanillaDamage(damage,
+                armorAttribute(stack, slot, EntityAttributes.GENERIC_ARMOR),
+                armorAttribute(stack, slot, EntityAttributes.GENERIC_ARMOR_TOUGHNESS), remainingDurability);
     }
 
     public static boolean applyBodyDamage(LivingEntity entity, DamageSource source, float damageAfterEffects) {
@@ -196,6 +303,11 @@ public final class VanillaDamageFabric implements ModInitializer {
                     source.isIn(DamageTypeTags.BYPASSES_INVULNERABILITY));
             acceptAttackEffect(entity, frame);
             var body = result.body();
+            var input = new DamageInput(frame.kind, frame.rawDamage, damageAfterEffects, frame.hit.target());
+            notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
+            if (!body.getVitality().getDead()) {
+                stagger(entity, frame.hit.staggerMillis(damageAfterEffects));
+            }
             if (result.deathPrevented()) {
                 // 身体尚未死亡及清账；随后复用原版扣物品、统计、音画与效果授予流程。
                 ((TotemAccess) entity).meridian$tryUseTotem(source);
@@ -209,6 +321,31 @@ public final class VanillaDamageFabric implements ModInitializer {
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getUuidAsString()
                     + " hpAfterEffects=" + damageAfterEffects, failure);
             throw failure;
+        }
+    }
+
+    private static void stagger(LivingEntity entity, long millis) {
+        // 玩家与类人走同一功法入口；是否打断起手由功法库按施放阶段和可打断标志判定。
+        if (millis == 0) {
+            return;
+        }
+        var stagger = new TechniqueService.Stagger(millis, preferences.stagger().movementMultiplier());
+        TechniqueFabric.service().stagger(entity.getUuid(), stagger);
+    }
+
+    private static LivingEntity attacker(DamageSource source) {
+        // 伤害来源没有生物攻击者时保留空值，日志观察方可区分环境伤害。
+        return source.getAttacker() instanceof LivingEntity living ? living : null;
+    }
+
+    private static void notifyDamageObservers(DamageEvent event) {
+        // 调试观察失败不能回滚已经提交的身体；每个观察方独立隔离异常。
+        for (DamageObserver observer : damageObservers) {
+            try {
+                observer.onDamage(event);
+            } catch (RuntimeException failure) {
+                LOGGER.error("伤害观察方执行失败", failure);
+            }
         }
     }
 
@@ -242,7 +379,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     private static void confirmDeath(LivingEntity entity) {
-        // 外部死亡保留当前局部 HP，重生也不自动治疗或生成一具新身体。
+        // 外部死亡只确认死态并保留局部 HP，玩家重生恢复由 Human 显式命令处理。
         if (entity.getWorld().isClient) {
             return;
         }
@@ -257,15 +394,16 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     private static final class DamageFrame {
+        private final float rawDamage;
         private VanillaDamageBridge.PreparedHit hit;
+        private DamageKind kind = DamageKind.CUSTOM;
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;
-    }
 
-    private static boolean isMeleeSource(String sourceId) {
-        // 首版只让原版近战来源进入攻击附效，箭、药水和其他投射物保留未来发射/命中语义。
-        return sourceId.equals("minecraft:mob_attack") || sourceId.equals("minecraft:mob_attack_no_aggro")
-                || sourceId.equals("minecraft:player_attack");
+        private DamageFrame(float rawDamage) {
+            // 附效上限仍以原版剂量为准，额外伤害不重复乘肌肉系数。
+            this.rawDamage = rawDamage;
+        }
     }
 
     private static void acceptAttackEffect(LivingEntity entity, DamageFrame frame) {

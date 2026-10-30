@@ -1,6 +1,9 @@
 package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
+import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.damage.DamageSource;
 import org.spongepowered.asm.mixin.Mixin;
@@ -8,6 +11,7 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import net.minecraft.registry.tag.DamageTypeTags;
@@ -16,10 +20,18 @@ import net.minecraft.registry.tag.DamageTypeTags;
 public abstract class LivingEntityDamageMixin {
     @Shadow protected abstract void damageArmor(DamageSource source, float amount);
 
-    @Inject(method = "applyDamage", at = @At("HEAD"))
-    private void meridian$beginApplication(DamageSource source, float amount, CallbackInfo callback) {
+    @WrapMethod(method = "damage")
+    private boolean meridian$strikeScope(DamageSource source, float amount, Operation<Boolean> original) {
+        // 直接伤害在盾挡前记账；横扫目标沿用外层攻击的同一笔做功。
+        try (var ignored = VanillaStrikeContext.damage(source)) {
+            return original.call(source, amount);
+        }
+    }
+
+    @ModifyVariable(method = "applyDamage", at = @At("HEAD"), argsOnly = true)
+    private float meridian$beginApplication(float amount, DamageSource source, float originalAmount) {
         // 玩家覆盖的实现单独建立上下文；本入口只负责普通生物路径。
-        VanillaDamageFabric.beginApplication((LivingEntity) (Object) this);
+        return VanillaDamageFabric.beginApplication((LivingEntity) (Object) this, source, amount);
     }
 
     @Inject(method = "applyDamage", at = @At("RETURN"))

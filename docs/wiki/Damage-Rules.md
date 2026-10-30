@@ -2,7 +2,7 @@
 
 ## 部位护甲与伤害顺序
 
-服务端接入 `LivingEntity.applyDamage` 与玩家覆盖的 `PlayerEntity.applyDamage`。原版先处理免疫、盾牌和无敌帧；进入 `applyArmorToDamage` 时查询唯一身体宿主，并按怪物偏好固定一次命中部位与身体版本。原版无敌帧内较强攻击仍只对超出的伤害继续结算。
+服务端接入 `LivingEntity.applyDamage` 与玩家覆盖的 `PlayerEntity.applyDamage`。原版先处理免疫、盾牌和无敌帧；进入 `applyDamage` 时先应用攻击者肌肉系数，随后在 `applyArmorToDamage` 查询唯一目标身体宿主，并按怪物偏好固定一次命中部位与身体版本。原版无敌帧内较强攻击仍只对超出的伤害继续结算。
 
 1. 护甲前伤害按 `hp_per_vanilla_hp` 换算为身体 HP；默认 1:1，原版 1 HP 为半颗心。
 2. 按身体模板与命中部位查覆盖槽位；只读取该槽正确穿戴的单件 `ArmorItem` 的护甲值、韧性与本次受击磨损前的剩余耐久比例，包括该物品自身的 NBT 属性修饰。不叠加其他装备或实体固有护甲，也不放大单件护甲的强度。
@@ -11,6 +11,8 @@
 5. 在原版扣血位置，将上述机制结算后的完整剂量提交给原先固定的身体部位。身体仅提交一次；完全抵挡或吸收时不提交。原版剩余 HP 的归零钳制不截断身体剂量，例如原版只剩 1 HP 时受到 4 点结算伤害，身体仍接收 4 点的对应剂量。
 
 这五步先计算再原子提交身体，不先扣一笔原始伤害再补回减免。Healing 按身体剩余 HP 比例同步原版血条，拦截原版随后尝试的直接扣血；Human 继续决定皮肤、骨骼、肌肉与内脏的连带损伤，内部账户不产生第二次原版扣血。
+
+Human 在这一次身体事务内将命中部位的过量伤害按模板系数分配给其他未毁部位，按当前实际上限 HP 加权并迭代处理饱和。已毁部位仍可命中，整次伤害按来源系数蔓延。护甲只在原命中部位计算一次，接收部位不再经过自己的护甲；其他减伤同样不会因接收者数量而重复。观察器提供固定提交前后快照和同一请求的 `HealthResult`，调试库直接展示回执里的余量、系数、接收部位及剂量。
 
 未绑定身体的实体继续使用原版全局护甲，也不应用此处新增的耐久曲线和比例上限。装备耐久磨损、保护附魔、反伤等仍沿用原版规则；本次未将耐久磨损改成只损耗命中的护甲。本次伤害先读取剩余耐久，再执行原版磨损；本次打坏装备会影响下一次命中的保护。
 
@@ -79,7 +81,7 @@ feet = ["left_foot", "right_foot"]
 
 ## 怪物命中偏好
 
-首次启动导出 `config/meridian-vanilla-damage.toml`，后续只读取已有配置，修改后重启。权重为一组部位的总份额，再均分给组内仍存活的实际部位；它们是相对权重，归一化后才是概率。
+首次启动导出 `config/meridian-vanilla-damage.toml`，后续只读取已有配置，修改后重启。权重为一组部位的总份额，再均分给组内实际存在的部位，包括 HP 已归零的部位；它们是相对权重，归一化后才是概率。
 
 ```toml
 hp_per_vanilla_hp = 1.0
@@ -102,9 +104,11 @@ other = 5
 
 劫掠者、卫道士、唤魔者、幻术师和女巫也有独立配置：劫掠者与幻术师沿用弓/弩的远程分布，卫道士偏向躯干和手臂，唤魔者尖牙偏向腿部，女巫药水较均匀。村民和流浪商人不攻击，不添加攻击者条目。
 
-这是一次成功攻击后的身体选点，不改变怪物 AI、箭矢轨迹或碰撞箱。远程攻击取 `DamageSource.getAttacker()` 的射手类型。未知模板、未知攻击者或所有可用组权重为零时，在实际存活部位间等概率选取；新增未分组部位使用 `other`。没有可用部位时由核心策略按当前构型处理，不生成虚构肢体。
+这是一次成功攻击后的身体选点，不改变怪物 AI、箭矢轨迹或碰撞箱。远程攻击取 `DamageSource.getAttacker()` 的射手类型。未知模板、未知攻击者或所有可用组权重为零时，在实际存在的部位间等概率选取；新增未分组部位使用 `other`。只有从实际构型移除的部位才退出候选。没有可用部位时由核心策略按当前构型处理，不生成虚构肢体。
 
 ## 致伤类型
+
+先读取下述 `kind/*` 标签；未指定时使用本表分类。
 
 | 原版来源 | Framework 机制 |
 |---|---|
@@ -123,11 +127,107 @@ other = 5
 
 分类描述本次致伤机制，不自动建立中毒、流血或灼烧周期。其他模组添加的来源默认保留其 ID，由生物策略解释。
 
+## 肌肉出力
+
+带 `#meridian:melee` 标签的命中，在护甲、抗性、保护附魔和吸收之前，将原版已计算的冷却、暴击、横扫伤害乘一次肌肉系数。系数属于攻击者，因此目标没有身体也生效；攻击者未绑定身体时系数为 `1`，不提交做功。
+
+```text
+肌肉系数 = clamp(出手肌肉当前可用力量之和 / 同一组肌肉基础力量之和,
+                 min_coefficient, max_coefficient)
+```
+
+当前可用力量直接使用 Framework `TissueCapabilities.available`，包含部位与组织伤势、疲劳和能力修正曲线。分母只取同一组肌肉定义中的基础力量，不使用功率。健康且无疲劳、无修正时系数为 `1`；人类单臂基础力量合计为 `830 N`。
+
+默认按攻击者实际主手侧选组织，左主手取左臂；`#meridian:off_hand` 取相反侧，`#meridian:two_handed` 合并两臂。两标签同时存在时双手优先。组织须同时匹配配置部位及组织标签。已绑定身体没有匹配组织时系数为 `1`，不提交空做功；这允许不具备该解剖结构的身体使用同一宿主接口。
+
+一次出手先读取身体计算系数，再将所有选中肌肉作为一组 `ExertTissues`，经同一攻击者的
+`BodyHealthHost.exertion` 原子提交。玩家 `attack` 与生物 `tryAttack` 的整个调用共用一份出手上下文，
+横扫主目标和所有附带目标复用同一笔做功前系数；每个目标进入自己的护甲结算前只缩放一次。
+每块肌肉的力量、功率分别取其基础值乘配置比例，时长相同；双手自然按两臂基础功率分摊消耗。
+请求固定读取时的身体 ID、revision 和幂等 ID，宿主使用可信身份与时钟走 Framework 普通命令入口。
+
+做功按“出手就记”：目标被盾挡、免疫或拒绝命中仍记该次做功；无目标的主手挥手包记为挥空。
+实体攻击后的首个主手动画包在同 tick 或下一 tick 内与攻击配对，不重复做功；副手动画不计主手出手。
+网络挥手包没有命中或按键类型，未配对的主手动画统一按挥空解释，因此不区分挖掘、交互产生的同类动画。
+直接调用 `LivingEntity.damage` 的带近战标签伤害若没有外层出手上下文，则该调用单独算一次出手；
+多目标自定义攻击应在外层用 `VanillaStrikeContext.attack` 包围全部目标，不能逐目标重新建立上下文。
+调用以栈隔离嵌套出手，正常返回和异常退出都会释放；下一次攻击重新读取系数并做功。
+
+Framework 按整个做功时段的最低能力倍率校验。`TISSUE_LOAD_EXCEEDED` 或 `MODULE_UNAVAILABLE` 表示本次力竭，整组做功不扣账，这一下仍按 `exhausted_coefficient` 命中；其他拒绝作为错误暴露。成功时使用提交前的系数，避免同一下因自身刚产生的疲劳重复变弱。动作栏不额外提示。
+
+配置修改后重启生效。已有文件完全缺少 `muscle` 节时读取内置默认值，不重写用户配置；显式配置必须完整，部位组非空、不重复且左右不重叠，标签为命名空间 ID，数值为有限正数，且 `min_coefficient <= exhausted_coefficient <= max_coefficient`。
+
+```toml
+[muscle]
+enabled = true
+tissue_tag = "human:arm_muscle"
+left_parts = ["left_upper_arm", "left_forearm", "left_hand"]
+right_parts = ["right_upper_arm", "right_forearm", "right_hand"]
+min_coefficient = 0.25
+max_coefficient = 2.0
+exhausted_coefficient = 0.25
+strike_force_ratio = 0.6
+strike_power_ratio = 0.6
+strike_seconds = 0.5
+```
+
+`enabled = false` 时系数恒为 `1`，不查询攻击者身体、不做功；这是服主平衡开关，完整附属装配仍是必需条件。默认数值尚未经过游玩平衡校准。
+
+## 受击僵直
+
+每次已绑定身体的命中在身体事务提交、观察者通知之后、死亡处理之前换算一次僵直；死亡的命中不写僵直。
+
+```text
+比例 = 护甲后剂量（身体 HP） / 命中模块（部位、组织或器官）HP 上限 × 类型系数
+比例 < threshold → 无僵直
+否则 僵直毫秒 = clamp(round(比例 × scale_millis), minimum_millis, maximum_millis)
+```
+
+剂量是护甲、抗性、附魔与吸收之后实际提交的身体 HP（`hp_per_vanilla_hp` 换算），分母取命中模块自己的上限，
+不用整身上限。类型系数先乘到比例上再比较门槛，所以同样剂量的钝击比切割更早越过门槛。
+未列出的致伤类型（灼热、寒冷、电击、腐蚀、毒性、`CUSTOM`）不产生僵直。
+
+结果经 `TechniqueFabric.service().stagger` 写入功法库；玩家、类人和其他宿主走同一入口。多次命中取较晚到期，
+不累加。僵直期间移动速度乘 `move_factor`，新起式被拒（「僵直中」），出手和收势照常；
+只有起手中声明可打断的功法会被打断。
+
+```toml
+[stagger]
+threshold = 0.05
+scale_millis = 4000.0
+minimum_millis = 200
+maximum_millis = 1000
+move_factor = 0.5
+
+[stagger.kind_factors]
+blunt = 1.5
+cutting = 1.0
+piercing = 0.75
+```
+
+人类胸部上限 40：切割 2 HP 恰为门槛，僵直 200 ms；4 HP 为 400 ms；钝击 4 HP 为 600 ms；
+手部上限 8，4 HP 切割即夹到 1000 ms。已有文件完全缺少 `stagger` 节时读取内置默认值；
+显式配置必须完整，门槛在 (0, 1]，`move_factor` 在 (0, 1]，上下限为 (0, 60000] 的整毫秒且下限不大于上限，
+类型键为小写协议名，系数为 [0, 1000] 的有限数。默认数值尚未经过游玩平衡校准。
+
+## 伤害类型标签
+
+Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace: false` 追加自己的伤害类型，无需改 Java 分类器。
+
+| 标签 | 含义 | 默认成员 |
+|---|---|---|
+| `#meridian:melee` | 肌肉系数、做功和攻击方附效入口 | `minecraft:player_attack`、`minecraft:mob_attack`、`minecraft:mob_attack_no_aggro` |
+| `#meridian:off_hand` | 副手侧出手 | 空 |
+| `#meridian:two_handed` | 双臂出手 | 空 |
+| `#meridian:kind/blunt`、`cutting`、`piercing`、`heat`、`cold`、`electric`、`corrosive`、`toxic` | 指定对应 Framework 致伤类型；后七项同样位于 `kind/` 下 | 空 |
+
+例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
+
 ## 攻击方附效
 
-当攻击者是已绑定 Meridian 身体的 `LivingEntity`，且来源是 `mob_attack`、`mob_attack_no_aggro` 或 `player_attack`，服务端才会查询攻击者只读身体并询问 `meridian_attack_effect` 提供方。箭、药水和其他投射物首版不会调用此入口；攻击者未绑定时也不会调用。入口使用 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 的 Protobuf 字节，提供方只接收服务端生成的攻击者快照、目标 UUID、原版来源、分类、护甲前剂量和世界 tick。
+当攻击者是已绑定 Meridian 身体的 `LivingEntity`，且来源带 `#meridian:melee` 标签，服务端才会查询攻击者只读身体并询问 `meridian_attack_effect` 提供方。默认箭、药水和其他投射物不会调用此入口；攻击者未绑定时也不会调用。入口使用 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 的 Protobuf 字节，提供方只接收服务端生成的攻击者快照、目标 UUID、原版来源、分类、乘肌肉系数前的护甲前剂量和世界 tick。
 
-最多一个提供方可以返回 `handled = true`。提供方返回的 `extra_damage_hp` 先与原版护甲前剂量相加，再经过同一件局部护甲、抗性、保护附魔和吸收，最后和原伤害一起向同一部位提交一次身体事务。附加剂量默认不能超过原版剂量的 4 倍，可在配置中修改；超出部分截断并记录日志。提供方抛错、返回非法方案或重复认领时，丢弃全部附效，原版伤害仍照常结算。
+最多一个提供方可以返回 `handled = true`。提供方返回的 `extra_damage_hp` 不乘肌肉系数，先与已乘系数的原版护甲前剂量相加，再经过同一件局部护甲、抗性、保护附魔和吸收，最后和原伤害一起向同一部位提交一次身体事务。附加剂量默认不能超过未乘系数原版剂量的 4 倍，可在配置中修改；超出部分截断并记录日志。提供方抛错、返回非法方案或重复认领时，丢弃全部附效，原版伤害仍照常结算。
 
 `status_effects` 暂存到当前伤害帧，在原版 `damage` 返回阶段对仍存活的目标施加；目标已死亡则丢弃。同一目标上的非空 `effect_id` 只接受一次，用于横扫和多段命中去重。配置节如下：
 
