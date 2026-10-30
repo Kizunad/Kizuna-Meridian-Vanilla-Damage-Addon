@@ -2,7 +2,7 @@
 
 ## 本地构建
 
-要求 Java 17，Minecraft 1.20.1、Fabric Loader 0.16.10、Fabric API 0.92.3+1.20.1。相邻 Framework 仓库通过 Gradle composite build 接入，也可用 `-PmeridianFrameworkDir="/path/to/framework"` 指定位置；`local.meridian:server` 仅为本地替换键，不是已发布的 Maven 坐标。
+要求 Java 17，Minecraft 1.20.1、Fabric Loader 0.16.10、Fabric API 0.92.3+1.20.1。相邻 Framework 仓库通过 Gradle composite build 接入：`settings.gradle` 应用其 `scripts/workspace.gradle`，按装配清单组合框架并取得版本目录 `libs`，也可用 `-Pkizuna.dir.framework="/path/to/framework"` 指定位置；`local.meridian:server` 仅为本地替换键，不是已发布的 Maven 坐标。
 
 ```sh
 ./gradlew build
@@ -16,7 +16,7 @@ python3 scripts/check_docs.py
 
 本附属不创建身体，玩家身体由必装 Human Addon 提供。八仓按适用端整套安装，开发运行统一应用 Framework 的 `scripts/full-assembly.gradle`。健康宿主和伤害效果集成都必须装配，缺接线启动报错；所有宿主明确返回该实体未绑定时才保留原版行为。本包不依赖 Human 内部类，其他生物附属采用相同接口。
 
-Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。编译读取相邻仓库的 Fabric 安装 JAR 及 shared/server 库，缺少任一产物直接报错；`fabric.mod.json` 声明 `meridian_technique`。构建与运行前应先构建功法库；Damage 源码不依赖具体功法实现。
+Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。功法库与框架一样在 settings 中以源码组合（`includeSource`，替换键用功法工程的真实坐标 `dev.kizuna.meridian.technique:*`，Loom 按此重新加入模组的传递库），编译与开发运行使用其 fabric、server、shared 工程的当前输出，相邻仓库缺失时组合构建直接报错；`fabric.mod.json` 声明 `meridian_technique`。Damage 源码不依赖具体功法实现。
 
 AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDamageFabric.preferences()` 返回已校验的整份规则（例如 `stagger().millis(...)` 估算一击能否造成僵直），`VanillaDamageFabric.estimateStrikeCoefficient(snapshot, entity, grip)` 用调用方已有的攻击者快照按[肌力系数](Damage-Rules.md)同一公式与夹取给出系数。虚脱由宿主在真实做功时判定，预估不包含这一项。
 

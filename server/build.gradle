@@ -2,15 +2,13 @@ plugins { id 'com.google.protobuf' }
 
 dependencies {
     api 'local.meridian:server'
-    api 'com.google.protobuf:protobuf-java:4.36.2'
-    implementation 'org.tomlj:tomlj:1.1.1'
-    testImplementation 'junit:junit:4.13.2'
+    api libs.protobuf.java
+    implementation libs.tomlj
+    testImplementation libs.junit4
 }
 
-def frameworkDirectory = providers.gradleProperty('meridianFrameworkDir')
-        .map { file(it) }
-        .getOrElse(file('../Kizuna-Meridian-Mod-Framework'))
-def frameworkProtoDirectory = new File(frameworkDirectory, 'shared/src/main/proto')
+// Framework 仓库位置与 settings 组合的框架一致，按装配清单解析。
+def frameworkProtoDirectory = new File(kizunaWorkspace.directory('framework'), 'shared/src/main/proto')
 
 tasks.withType(com.google.protobuf.gradle.GenerateProtoTask).configureEach {
     // 只编译本仓库的新协议；Framework proto 仅作为 import 搜索路径，避免重复生成 BodyMessages。
@@ -18,7 +16,8 @@ tasks.withType(com.google.protobuf.gradle.GenerateProtoTask).configureEach {
 }
 
 protobuf {
-    protoc { artifact = 'com.google.protobuf:protoc:4.36.2' }
+    // protoc 与运行库同版本，取版本目录中的 protobuf-java。
+    protoc { artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.java.get()}" }
 }
 
 test { useJUnit() }

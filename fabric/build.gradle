@@ -2,16 +2,20 @@ plugins { id 'fabric-loom' }
 
 repositories { maven { url = 'https://maven.fabricmc.net/' } }
 dependencies {
-    minecraft 'com.mojang:minecraft:1.20.1'
-    mappings 'net.fabricmc:yarn:1.20.1+build.10:v2'
-    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
-    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.3+1.20.1'
+    minecraft libs.minecraft
+    mappings "net.fabricmc:yarn:${libs.versions.yarn.get()}:v2"
+    modImplementation libs.fabric.loader
+    modImplementation libs.fabric.api
     implementation project(':server')
     include project(':server')
     include implementation('local.meridian:server')
-    include implementation('com.google.protobuf:protobuf-java:4.36.2')
-    include implementation('org.tomlj:tomlj:1.1.1')
-    include implementation('org.antlr:antlr4-runtime:4.11.1')
+    // 版本目录条目是 Provider，implementation 不返回依赖对象，嵌套声明单独写。
+    implementation libs.protobuf.java
+    include libs.protobuf.java
+    implementation libs.tomlj
+    include libs.tomlj
+    implementation libs.antlr.runtime
+    include libs.antlr.runtime
 }
 
 processResources {
@@ -28,30 +32,12 @@ tasks.named('remapJar') {
     dependsOn clearNestedJarCache
 }
 
-apply from: '../../Kizuna-Meridian-Mod-Framework/scripts/full-assembly.gradle'
+apply from: new File(kizunaWorkspace.directory('framework'), 'scripts/full-assembly.gradle')
 
-// 命中僵直写入功法服务，功法模块是编译期必需依赖；普通库显式提供安装包内的嵌套依赖。
-def techniqueDirectory = rootProject.file('../Kizuna-Meridian-Technique-Framework')
-def techniqueArtifacts = [
-        fabric: new File(techniqueDirectory,
-                'fabric/build/libs/kizuna-meridian-technique-framework-fabric-0.1.0-SNAPSHOT.jar'),
-        server: new File(techniqueDirectory,
-                'server/build/libs/kizuna-meridian-technique-framework-server-0.1.0-SNAPSHOT.jar'),
-        shared: new File(techniqueDirectory,
-                'shared/build/libs/kizuna-meridian-technique-framework-shared-0.1.0-SNAPSHOT.jar')
-]
+// 命中僵直写入功法服务，功法模块是编译期必需依赖；功法库在 settings 中以源码组合，server 传递 shared 协议。
 dependencies {
-    modImplementation files(techniqueArtifacts.fabric)
-    implementation files(techniqueArtifacts.server, techniqueArtifacts.shared)
-}
-tasks.withType(JavaExec).configureEach {
-    doFirst {
-        techniqueArtifacts.values().each { artifact ->
-            if (!artifact.isFile()) {
-                throw new GradleException("缺少必需功法装配产物：${artifact}")
-            }
-        }
-    }
+    modImplementation 'dev.kizuna.meridian.technique:fabric'
+    implementation 'dev.kizuna.meridian.technique:server'
 }
 
 loom {
@@ -73,8 +59,8 @@ sourceSets {
 
 dependencies {
     // Loom 开发重映射不装载 Humanoid 安装 JAR 的嵌套库；只为 GameTest 补齐纯 Java server。
-    gametestRuntimeOnly files(rootProject.file(
-            '../Kizuna-Meridian-Vanilla-Humanoid-Threatening/server/build/libs/kizuna-meridian-vanilla-humanoid-threatening-server-0.1.0-SNAPSHOT.jar'))
+    // Humanoid 在本仓之上，只在运行时需要，按装配清单读文件，避免低层构建反过来组合高层仓库。
+    gametestRuntimeOnly files(kizunaWorkspace.artifact('humanoid-threatening', 'server', false))
 }
 
 loom {
