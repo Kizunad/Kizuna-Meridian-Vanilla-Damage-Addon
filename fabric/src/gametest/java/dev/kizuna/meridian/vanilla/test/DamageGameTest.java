@@ -54,6 +54,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static dev.kizuna.meridian.vanilla.test.DamageGameTestTicks.DEFAULT_TIMEOUT;
+
 /** 整体回归：真实 Player/LivingEntity、Mixin、Fabric 死亡事件与核心账本。 */
 public final class DamageGameTest implements BodyHealthHost {
     private static final InMemoryBodyStore STORE = new InMemoryBodyStore(List.of(), List.of());
@@ -92,7 +94,7 @@ public final class DamageGameTest implements BodyHealthHost {
                     .build(),
             STORE, (caller, receipt, previous, updated) -> { /* 由断言读取权威提交。 */ });
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void mapsFinalLossAndBothDeathDirections(GameTestHelper context) {
         // 玩家实现有独立 actuallyHurt，吸收生命挡住时身体必须完全不变。
         var player = context.makeMockPlayer(GameType.SURVIVAL);
@@ -142,7 +144,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void attackEffectProviderAddsDamageAndStatusOnce(GameTestHelper context) {
         var attacker = context.spawn(EntityTypes.ZOMBIE, 6, 2, 6);
         var target = context.makeMockPlayer(GameType.SURVIVAL);
@@ -173,7 +175,7 @@ public final class DamageGameTest implements BodyHealthHost {
         }
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void attackEffectProviderFailureKeepsOriginalDamage(GameTestHelper context) {
         var attacker = context.spawn(EntityTypes.ZOMBIE, 6, 2, 6);
         var target = context.makeMockPlayer(GameType.SURVIVAL);
@@ -195,7 +197,7 @@ public final class DamageGameTest implements BodyHealthHost {
         }
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void localArmorRetainsVanillaEffectsAndCooldown(GameTestHelper context) {
         // 单部位样例使选点确定，依次验证每个默认槽位及没有覆盖的前臂。
         var attacker = context.spawn(EntityTypes.ZOMBIE, 6, 2, 6);
@@ -320,7 +322,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void durabilityAndReductionCapUseHitArmorBeforeWear(GameTestHelper context) {
         // 铁胸甲耐久 240，使各个默认端点和段中值都能由真实物品精确表示。
         var attacker = context.spawn(EntityTypes.ZOMBIE, 6, 2, 6);
@@ -414,7 +416,7 @@ public final class DamageGameTest implements BodyHealthHost {
                 STORE.find(found.get().id()).orElseThrow())).build());
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void muscleScalesBeforeArmorOnceForPlayerAndUnboundTargets(GameTestHelper context) {
         // 两条 actuallyHurt 实现都必须在护甲前乘一次，目标无身体仍受攻击者系数影响。
         var attacker = context.spawn(EntityTypes.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
@@ -446,7 +448,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void sameSwordUsesPeakCollapseAndExhaustedStillHits(GameTestHelper context) {
         // 使用真实剑攻击，直接能力修正模拟蓄力和虚脱，不依赖功法仓。
         for (double multiplier : new double[]{1, BOOST, COLLAPSE}) {
@@ -475,7 +477,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void playerSweepUsesOneExertionAndOnePreStrikeCoefficient(GameTestHelper context) {
         // 真实剑横扫命中三个目标，逐目标缩放复用同一笔做功前系数。
         Player attacker = context.makeMockPlayer(GameType.SURVIVAL);
@@ -504,7 +506,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void shieldBlockStillRecordsOneExertion(GameTestHelper context) {
         // 盾挡在 actuallyHurt 前退出，出手账仍应完成且只记一次。
         Player attacker = context.makeMockPlayer(GameType.SURVIVAL);
@@ -526,7 +528,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void handSwingPacketRecordsMissAndDoesNotChargeAttackTwice(GameTestHelper context) {
         // 使用正式网络处理器接收挥手包，主手挥空收费。
         // 实体攻击后的动画包不重复收费。
@@ -589,7 +591,7 @@ public final class DamageGameTest implements BodyHealthHost {
         attacker.setSprinting(false /* sprinting */);
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void defaultMeleeSourcesAndLeftMainHandRemainSupported(GameTestHelper context) {
         // 默认三个原版来源都接入近战；左撇子主手不能读取被强化的右臂。
         var attacker = context.makeMockPlayer(GameType.SURVIVAL);
@@ -610,7 +612,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void taggedMeleeSelectsHandsOverridesKindAndKeepsExtraUnscaled(GameTestHelper context) {
         // 自定义来源只用数据包标签接入，附效的额外 1 HP 不乘攻击者肌肉系数。
         var attacker = context.makeMockPlayer(GameType.SURVIVAL);
@@ -644,7 +646,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
-    @GameTest
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void conflictingKindTagsAreRejectedOnLoadAndUse(GameTestHelper context) {
         // 临时复用真实注册表成员校验加载入口，完成后恢复标签，不污染其他测试。
         var registry = context.getLevel().registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE);
