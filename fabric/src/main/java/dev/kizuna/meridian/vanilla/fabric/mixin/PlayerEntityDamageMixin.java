@@ -21,13 +21,22 @@ public abstract class PlayerEntityDamageMixin {
     @WrapMethod(method = "attack")
     private void meridian$attackScope(Entity target, Operation<Void> original) {
         // 包围整个出手及横扫循环，目标拒绝和异常退出也不重复或泄漏上下文。
+        // 26.2 的 Fabric 攻击回调也在这层包装里面，回调拒绝的攻击不开出手，也不吞掉随后的挥手包。
         var player = (Player) (Object) this;
-        try (var ignored = VanillaStrikeContext.attack(player, player.damageSources().playerAttack(player))) {
+        var scope = VanillaStrikeContext.attackScope(player);
+        try (scope) {
             original.call(target);
         }
-        if (player instanceof ServerPlayer serverPlayer) {
+        if (scope != null && scope.started() && player instanceof ServerPlayer serverPlayer) {
             VanillaStrikeContext.attacked(serverPlayer);
         }
+    }
+
+    @Inject(method = "attack", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/player/Player;cannotAttack(Lnet/minecraft/world/entity/Entity;)Z"))
+    private void meridian$beginAttack(Entity target, CallbackInfo callback) {
+        // 方法体第一句之前开本次出手：头部的 Fabric 攻击回调已放行，目标不可攻击仍按出手记账，与 1.20.1 一致。
+        VanillaStrikeContext.beginAttack((Player) (Object) this);
     }
 
     @ModifyVariable(method = "actuallyHurt", at = @At("HEAD"), argsOnly = true)

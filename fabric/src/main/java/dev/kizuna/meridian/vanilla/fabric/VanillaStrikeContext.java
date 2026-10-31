@@ -9,11 +9,13 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 
 /** 一次出手的做功前系数；嵌套攻击各自持有上下文，异常退出也释放。 */
 public final class VanillaStrikeContext implements AutoCloseable {
     private static final Map<LivingEntity, Deque<VanillaStrikeContext>> strikes = new IdentityHashMap<>();
     private static final Map<ServerPlayer, Long> pendingSwings = new IdentityHashMap<>();
+    private static final Map<Player, Deque<AttackScope>> attackScopes = new IdentityHashMap<>();
     private static final long SWING_PACKET_GRACE_TICKS = 1;
     private final LivingEntity attacker;
     private final DamageSource source;
@@ -33,6 +35,27 @@ public final class VanillaStrikeContext implements AutoCloseable {
             return null;
         }
         return new VanillaStrikeContext(attacker, source);
+    }
+
+    public static AttackScope attackScope(Player player) {
+        // 包住一次 Player.attack 调用；客户端只预测动画，不登记。
+        if (player.level().isClientSide()) {
+            return null;
+        }
+        return new AttackScope(player);
+    }
+
+    public static void beginAttack(Player player) {
+        // 26.2 的 Fabric 攻击回调注入在 Player.attack 头部，方法体开始时回调已放行，这时才读身体并按出手记账；
+        // 与 1.20.1 回调在 ServerPlayer.attack 头部、先于父类攻击拦截时一样，被拒绝的攻击不收费。
+        if (player.level().isClientSide()) {
+            return;
+        }
+        Deque<AttackScope> stack = attackScopes.get(player);
+        if (stack == null || stack.isEmpty()) {
+            throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_ORDER);
+        }
+        stack.peek().begin();
     }
 
     public static VanillaStrikeContext damage(DamageSource source) {
@@ -95,6 +118,7 @@ public final class VanillaStrikeContext implements AutoCloseable {
         // 世界停止后不保留实体、调用栈或挥手包身份。
         strikes.clear();
         pendingSwings.clear();
+        attackScopes.clear();
     }
 
     @Override
@@ -106,6 +130,46 @@ public final class VanillaStrikeContext implements AutoCloseable {
         }
         if (stack.isEmpty()) {
             strikes.remove(attacker);
+        }
+    }
+
+    /** 玩家一次 attack 调用的范围；Fabric 攻击回调拒绝时方法体不执行，范围里就没有出手。 */
+    public static final class AttackScope implements AutoCloseable {
+        private final Player player;
+        private VanillaStrikeContext strike;
+
+        private AttackScope(Player player) {
+            // 进入调用时只登记范围，不读身体也不记账。
+            this.player = player;
+            attackScopes.computeIfAbsent(player, ignored -> new ArrayDeque<>()).push(this);
+        }
+
+        private void begin() {
+            // 一次调用只开一个出手上下文，后续横扫目标都复用它。
+            if (strike != null) {
+                throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_ORDER);
+            }
+            strike = attack(player, player.damageSources().playerAttack(player));
+        }
+
+        public boolean started() {
+            // 方法体执行过才算出手，紧跟的主手挥手包才不再按挥空收费。
+            return strike != null;
+        }
+
+        @Override
+        public void close() {
+            // 按嵌套顺序弹出调用范围再释放出手上下文，目标结算异常也不留到下一次攻击。
+            Deque<AttackScope> stack = attackScopes.get(player);
+            if (stack == null || stack.pop() != this) {
+                throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_ORDER);
+            }
+            if (stack.isEmpty()) {
+                attackScopes.remove(player);
+            }
+            if (strike != null) {
+                strike.close();
+            }
         }
     }
 }
