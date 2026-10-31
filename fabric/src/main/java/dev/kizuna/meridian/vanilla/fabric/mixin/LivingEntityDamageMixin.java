@@ -2,6 +2,7 @@ package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.LivingEntity;
@@ -20,22 +21,25 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class LivingEntityDamageMixin {
     @Shadow protected abstract void hurtArmor(DamageSource source, float amount);
 
-    @WrapMethod(method = "hurt")
-    private boolean meridian$strikeScope(DamageSource source, float amount, Operation<Boolean> original) {
+    @WrapMethod(method = "hurtServer")
+    private boolean meridian$strikeScope(ServerLevel level, DamageSource source, float amount,
+                                         Operation<Boolean> original) {
         // 直接伤害在盾挡前记账；横扫目标沿用外层攻击的同一笔做功。
         try (var ignored = VanillaStrikeContext.damage(source)) {
-            return original.call(source, amount);
+            return original.call(level, source, amount);
         }
     }
 
     @ModifyVariable(method = "actuallyHurt", at = @At("HEAD"), argsOnly = true)
-    private float meridian$beginApplication(float amount, DamageSource source, float originalAmount) {
+    private float meridian$beginApplication(float amount, ServerLevel level, DamageSource source,
+                                            float originalAmount) {
         // 玩家覆盖的实现单独建立上下文；本入口只负责普通生物路径。
         return VanillaDamageFabric.beginApplication((LivingEntity) (Object) this, source, amount);
     }
 
     @Inject(method = "actuallyHurt", at = @At("RETURN"))
-    private void meridian$endApplication(DamageSource source, float amount, CallbackInfo callback) {
+    private void meridian$endApplication(ServerLevel level, DamageSource source, float amount,
+                                         CallbackInfo callback) {
         // 零伤害早退也清理上下文，不把本次选点留给下一次攻击。
         VanillaDamageFabric.endApplication((LivingEntity) (Object) this);
     }
@@ -54,7 +58,8 @@ public abstract class LivingEntityDamageMixin {
     }
 
     @Redirect(method = "actuallyHurt", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/LivingEntity;setHealth(F)V"))
-    private void meridian$recordFinalLoss(LivingEntity entity, float requestedHealth, DamageSource source, float amount) {
+    private void meridian$recordFinalLoss(LivingEntity entity, float requestedHealth, ServerLevel level,
+                                          DamageSource source, float amount) {
         // 身体接收完整结算剂量，原版血条的归零钳制不能截断高于剩余血量的伤害。
         float previousHealth = entity.getHealth();
         boolean integrated = VanillaDamageFabric.applyBodyDamage(entity, source, Math.max(0, previousHealth - requestedHealth));
@@ -63,8 +68,9 @@ public abstract class LivingEntityDamageMixin {
         }
     }
 
-    @Inject(method = "hurt", at = @At("RETURN"))
-    private void meridian$finishDamage(DamageSource source, float amount, CallbackInfoReturnable<Boolean> callback) {
+    @Inject(method = "hurtServer", at = @At("RETURN"))
+    private void meridian$finishDamage(ServerLevel level, DamageSource source, float amount,
+                                       CallbackInfoReturnable<Boolean> callback) {
         // 原版图腾与死亡分支先结束，身体判死的同步随后完成且最多执行一次。
         VanillaDamageFabric.finishDamage((LivingEntity) (Object) this);
     }

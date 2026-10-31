@@ -29,7 +29,7 @@ public final class VanillaStrikeContext implements AutoCloseable {
 
     public static VanillaStrikeContext attack(LivingEntity attacker, DamageSource source) {
         // 客户端只预测动画，不读取服务端身体或记账。
-        if (attacker.level().isClientSide) {
+        if (attacker.level().isClientSide()) {
             return null;
         }
         return new VanillaStrikeContext(attacker, source);
@@ -37,7 +37,7 @@ public final class VanillaStrikeContext implements AutoCloseable {
 
     public static VanillaStrikeContext damage(DamageSource source) {
         // 直接调用 hurt 的自定义近战也建立独立出手，盾挡之前完成记账。
-        if (!(source.getEntity() instanceof LivingEntity attacker) || attacker.level().isClientSide
+        if (!(source.getEntity() instanceof LivingEntity attacker) || attacker.level().isClientSide()
                 || !source.is(VanillaDamageTypeTags.MELEE) || current(attacker, source) != null) {
             return null;
         }

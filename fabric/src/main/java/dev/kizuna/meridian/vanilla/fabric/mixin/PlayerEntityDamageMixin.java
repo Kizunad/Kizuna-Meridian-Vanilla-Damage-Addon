@@ -2,6 +2,7 @@ package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
@@ -30,19 +31,22 @@ public abstract class PlayerEntityDamageMixin {
     }
 
     @ModifyVariable(method = "actuallyHurt", at = @At("HEAD"), argsOnly = true)
-    private float meridian$beginPlayerApplication(float amount, DamageSource source, float originalAmount) {
+    private float meridian$beginPlayerApplication(float amount, ServerLevel level, DamageSource source,
+                                                  float originalAmount) {
         // 玩家覆盖了 actuallyHurt，建立自身调用范围以复用父类的护甲阶段注入。
         return VanillaDamageFabric.beginApplication((Player) (Object) this, source, amount);
     }
 
     @Inject(method = "actuallyHurt", at = @At("RETURN"))
-    private void meridian$endPlayerApplication(DamageSource source, float amount, CallbackInfo callback) {
+    private void meridian$endPlayerApplication(ServerLevel level, DamageSource source, float amount,
+                                               CallbackInfo callback) {
         // 即使吸收生命挡住全部伤害，也释放尚未提交的选点。
         VanillaDamageFabric.endApplication((Player) (Object) this);
     }
 
     @Redirect(method = "actuallyHurt", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;setHealth(F)V"))
-    private void meridian$recordPlayerLoss(Player player, float requestedHealth, DamageSource source, float amount) {
+    private void meridian$recordPlayerLoss(Player player, float requestedHealth, ServerLevel level,
+                                           DamageSource source, float amount) {
         // 玩家重写了 actuallyHurt，必须单独接入；该路径不会再调用 LivingEntity 的实现。
         float previousHealth = player.getHealth();
         boolean integrated = VanillaDamageFabric.applyBodyDamage(player, source, Math.max(0, previousHealth - requestedHealth));

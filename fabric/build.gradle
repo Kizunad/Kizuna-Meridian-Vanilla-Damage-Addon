@@ -1,11 +1,11 @@
-plugins { id 'fabric-loom' }
+plugins { id 'net.fabricmc.fabric-loom' }
 
 repositories { maven { url = 'https://maven.fabricmc.net/' } }
 dependencies {
+    // 26.x 不混淆：直接用官方名编译，没有映射，模组依赖也不经重映射。
     minecraft libs.minecraft
-    mappings loom.officialMojangMappings()
-    modImplementation libs.fabric.loader
-    modImplementation libs.fabric.api
+    implementation libs.fabric.loader
+    implementation libs.fabric.api
     implementation project(':server')
     include project(':server')
     include implementation('local.meridian:server')
@@ -27,7 +27,7 @@ apply from: new File(kizunaWorkspace.directory('framework'), 'scripts/full-assem
 
 // 命中僵直写入功法服务，功法模块是编译期必需依赖；功法库在 settings 中以源码组合，server 传递 shared 协议。
 dependencies {
-    modImplementation 'dev.kizuna.meridian.technique:fabric'
+    implementation 'dev.kizuna.meridian.technique:fabric'
     implementation 'dev.kizuna.meridian.technique:server'
 }
 
@@ -49,9 +49,11 @@ sourceSets {
 }
 
 dependencies {
-    // Loom 开发重映射不装载 Humanoid 安装 JAR 的嵌套库；只为 GameTest 补齐纯 Java server。
+    // 与 1.20.1 一致由类路径上的纯 Java 库生效：GameTest 显式补 Humanoid 的 server，完整装配停用安装 JAR 里重复的嵌套副本。
     // Humanoid 在本仓之上，只在运行时需要，按装配清单读文件，避免低层构建反过来组合高层仓库。
     gametestRuntimeOnly files(kizunaWorkspace.artifact('humanoid-threatening', 'server', false))
+    // 假玩家夹具来自功法库的 testFixtures，与功法 fabric 同经源码组合解析。
+    gametestImplementation testFixtures('dev.kizuna.meridian.technique:fabric')
 }
 
 loom {

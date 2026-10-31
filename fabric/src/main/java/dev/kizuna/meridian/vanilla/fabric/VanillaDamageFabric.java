@@ -23,8 +23,12 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.CommonLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
@@ -33,10 +37,10 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.item.ArmorItem;
 import net.minecraft.world.item.AxeItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.SwordItem;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -99,7 +103,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         bridge = new VanillaDamageBridge(hosts, preferences, integrations, attackEffectProviders);
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
-                VanillaDamageTypeTags.validate(registries.registryOrThrow(Registries.DAMAGE_TYPE));
+                VanillaDamageTypeTags.validate(registries.lookupOrThrow(Registries.DAMAGE_TYPE));
             }
         });
         ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> confirmDeath(entity));
@@ -117,7 +121,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     public static float beginApplication(LivingEntity entity, DamageSource source, float rawDamage) {
         // 在任何护甲结算前乘一次；攻击者做功与目标有无身体无关。
-        if (entity.level().isClientSide) {
+        if (entity.level().isClientSide()) {
             return rawDamage;
         }
         double coefficient = 1;
@@ -173,7 +177,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (frames == null || rawDamage <= 0) {
             return Optional.empty();
         }
-        String sourceId = source.typeHolder().unwrapKey().map(key -> key.location().toString())
+        String sourceId = source.typeHolder().unwrapKey().map(key -> key.identifier().toString())
                 .orElse("meridian_vanilla:unregistered");
         try {
             AttackSource attack = attackSource(source, sourceId);
@@ -210,8 +214,9 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (attacker != null) {
             attackerId = BuiltInRegistries.ENTITY_TYPE.getKey(attacker.getType()).toString();
             if (attacker instanceof LivingEntity living) {
-                var weapon = living.getMainHandItem().getItem();
-                edgedWeapon = weapon instanceof SwordItem || weapon instanceof AxeItem;
+                // 26.2 没有剑的物品类，剑按原版剑标签认定（原版剑全部在内）。
+                var weapon = living.getMainHandItem();
+                edgedWeapon = weapon.is(ItemTags.SWORDS) || weapon.getItem() instanceof AxeItem;
             }
         }
         Optional<DamageKind> taggedKind = VanillaDamageTypeTags.kind(source);
@@ -275,7 +280,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             case FEET -> EquipmentSlot.FEET;
         };
         var stack = entity.getItemBySlot(slot);
-        if (!(stack.getItem() instanceof ArmorItem armor) || armor.getEquipmentSlot() != slot) {
+        if (!stack.is(armorTag(slot))) {
             return (float) damage;
         }
         OptionalDouble remainingDurability = OptionalDouble.empty();
@@ -286,6 +291,16 @@ public final class VanillaDamageFabric implements ModInitializer {
         return (float) hit.remainingVanillaDamage(damage,
                 armorAttribute(stack, slot, Attributes.ARMOR),
                 armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS), remainingDurability);
+    }
+
+    private static TagKey<Item> armorTag(EquipmentSlot slot) {
+        // 26.2 没有盔甲物品类，按原版各槽位盔甲标签认定，成员与 1.20.1 的盔甲物品一致（另有新增的铜甲）。
+        return switch (slot) {
+            case HEAD -> ItemTags.HEAD_ARMOR;
+            case CHEST -> ItemTags.CHEST_ARMOR;
+            case LEGS -> ItemTags.LEG_ARMOR;
+            default -> ItemTags.FOOT_ARMOR;
+        };
     }
 
     public static boolean applyBodyDamage(LivingEntity entity, DamageSource source, float damageAfterEffects) {
@@ -349,13 +364,16 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
     }
 
-    private static double armorAttribute(ItemStack stack, EquipmentSlot slot, Attribute attribute) {
-        // 计算这件装备自己的属性修饰，兼容物品 NBT；不把其他槽位或实体固有护甲算进来。
+    private static double armorAttribute(ItemStack stack, EquipmentSlot slot, Holder<Attribute> attribute) {
+        // 计算这件装备自己的属性修饰，读物品的属性修饰组件；不把其他槽位、附魔或实体固有护甲算进来。
         var localAttribute = new AttributeInstance(attribute, ignored -> { /* 临时计算无需发布实体属性。 */ });
         localAttribute.setBaseValue(0);
-        for (var modifier : stack.getAttributeModifiers(slot).get(attribute)) {
-            localAttribute.addTransientModifier(modifier);
-        }
+        stack.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY)
+                .forEach(slot, (holder, modifier) -> {
+                    if (holder.equals(attribute)) {
+                        localAttribute.addTransientModifier(modifier);
+                    }
+                });
         return localAttribute.getValue();
     }
 
@@ -380,7 +398,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static void confirmDeath(LivingEntity entity) {
         // 外部死亡只确认死态并保留局部 HP，玩家重生恢复由 Human 显式命令处理。
-        if (entity.level().isClientSide) {
+        if (entity.level().isClientSide()) {
             return;
         }
         pendingDeaths.remove(entity);
@@ -421,8 +439,8 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static void applyStatusEffect(LivingEntity entity, AttackEffectMessages.StatusEffect status) {
         try {
-            ResourceLocation id = new ResourceLocation(status.getEffectId());
-            var effect = BuiltInRegistries.MOB_EFFECT.getOptional(id);
+            Identifier id = Identifier.parse(status.getEffectId());
+            var effect = BuiltInRegistries.MOB_EFFECT.get(id);
             if (effect.isEmpty()) {
                 LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_STATUS + " target=" + entity.getStringUUID()
                         + " effect=" + status.getEffectId());

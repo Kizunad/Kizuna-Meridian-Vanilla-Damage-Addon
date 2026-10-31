@@ -15,7 +15,7 @@ include 'server', 'fabric'
 // 本地替换键不代表已经发布的 Maven 坐标，协议始终从独立框架仓库生成；功法 shared 编译期导入框架客户端协议。
 kizunaWorkspace.includeSource('framework', [client: 'local.meridian:client', server: 'local.meridian:server'])
 // 命中僵直写入功法服务，功法库也以源码组合，编译与开发运行解析为同一组件。
-// 功法 fabric 是模组依赖，Loom 会按真实坐标重新加入其传递库，所以替换键用功法工程自身的 group 与工程名。
+// 功法 fabric 按真实坐标声明依赖，替换键用功法工程自身的 group 与工程名。
 kizunaWorkspace.includeSource('technique', [
         fabric: 'dev.kizuna.meridian.technique:fabric',
         server: 'dev.kizuna.meridian.technique:server',

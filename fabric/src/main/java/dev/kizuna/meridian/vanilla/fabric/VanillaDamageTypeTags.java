@@ -5,9 +5,10 @@ import dev.kizuna.meridian.vanilla.MuscleRules;
 import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
 import java.util.Map;
 import java.util.Optional;
+import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
@@ -33,7 +34,7 @@ public final class VanillaDamageTypeTags {
 
     private static TagKey<DamageType> tag(String path) {
         // 对外接入统一使用 meridian 命名空间。
-        return TagKey.create(Registries.DAMAGE_TYPE, new ResourceLocation("meridian", path));
+        return TagKey.create(Registries.DAMAGE_TYPE, Identifier.fromNamespaceAndPath("meridian", path));
     }
 
     public static MuscleRules.Grip grip(DamageSource source) {
@@ -52,7 +53,7 @@ public final class VanillaDamageTypeTags {
         return kind(source.typeHolder());
     }
 
-    private static Optional<DamageKind> kind(net.minecraft.core.Holder<DamageType> type) {
+    private static Optional<DamageKind> kind(Holder<DamageType> type) {
         // 同一来源最多有一种显式致伤类型，其余继续交给默认分类器。
         DamageKind selected = null;
         for (var entry : KINDS.entrySet()) {
@@ -69,6 +70,6 @@ public final class VanillaDamageTypeTags {
 
     public static void validate(Registry<DamageType> registry) {
         // 标签加载和重载完成后逐项校验，冲突会中止加载并报告来源 ID。
-        registry.holders().forEach(VanillaDamageTypeTags::kind);
+        registry.listElements().forEach(VanillaDamageTypeTags::kind);
     }
 }

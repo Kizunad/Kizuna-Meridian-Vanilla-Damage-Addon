@@ -2,7 +2,7 @@
 
 ## 本地构建
 
-要求 Java 17，Minecraft 1.20.1、Fabric Loader 0.16.10、Fabric API 0.92.3+1.20.1。相邻 Framework 仓库通过 Gradle composite build 接入：`settings.gradle` 应用其 `scripts/workspace.gradle`，按装配清单组合框架并取得版本目录 `libs`，也可用 `-Pkizuna.dir.framework="/path/to/framework"` 指定位置；`local.meridian:server` 仅为本地替换键，不是已发布的 Maven 坐标。
+要求 Java 25，Minecraft 26.2、Fabric Loader 0.20.1、Fabric API 0.161.0+26.2。相邻 Framework 仓库通过 Gradle composite build 接入：`settings.gradle` 应用其 `scripts/workspace.gradle`，按装配清单组合框架并取得版本目录 `libs`，也可用 `-Pkizuna.dir.framework="/path/to/framework"` 指定位置；`local.meridian:server` 仅为本地替换键，不是已发布的 Maven 坐标。
 
 ```sh
 ./gradlew build
@@ -10,11 +10,11 @@
 python3 scripts/check_docs.py
 ```
 
-安装使用 `fabric/build/libs/` 内不带 `sources` 或 `dev` 后缀的重映射 JAR，并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。伤害结算只在服务端执行，单机由集成服务器执行；客户端同样安装本模组，伤害类型的[显示名键](Damage-Rules.md#显示名键)由它提供。
+安装使用 `fabric/build/libs/` 内不带 `sources` 后缀的 JAR（26.2 不混淆，构建不重映射），并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。伤害结算只在服务端执行，单机由集成服务器执行；客户端同样安装本模组，伤害类型的[显示名键](Damage-Rules.md#显示名键)由它提供。
 
 本附属不创建身体，玩家身体由必装 Human Addon 提供。八仓按适用端整套安装，开发运行统一应用 Framework 的 `scripts/full-assembly.gradle`。健康宿主和伤害效果集成都必须装配，缺接线启动报错；所有宿主明确返回该实体未绑定时才保留原版行为。本包不依赖 Human 内部类，其他生物附属采用相同接口。
 
-Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。功法库与框架一样在 settings 中以源码组合（`includeSource`，替换键用功法工程的真实坐标 `dev.kizuna.meridian.technique:*`，Loom 按此重新加入模组的传递库），编译与开发运行使用其 fabric、server、shared 工程的当前输出，相邻仓库缺失时组合构建直接报错；`fabric.mod.json` 声明 `meridian_technique`。Damage 源码不依赖具体功法实现。
+Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。功法库与框架一样在 settings 中以源码组合（`includeSource`，替换键用功法工程的真实坐标 `dev.kizuna.meridian.technique:*`，与依赖声明一致），编译与开发运行使用其 fabric、server、shared 工程的当前输出，相邻仓库缺失时组合构建直接报错；`fabric.mod.json` 声明 `meridian_technique`。Damage 源码不依赖具体功法实现。
 
 AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDamageFabric.preferences()` 返回已校验的整份规则（例如 `stagger().millis(...)` 估算一击能否造成僵直），`VanillaDamageFabric.estimateStrikeCoefficient(snapshot, entity, grip)` 用调用方已有的攻击者快照按[肌力系数](Damage-Rules.md)同一公式与夹取给出系数。虚脱由宿主在真实做功时判定，预估不包含这一项。
 
@@ -50,6 +50,6 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 ## 验证范围与失败行为
 
-必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。服务端单元回归覆盖攻击附效的无认领、单认领、多认领、未绑定攻击者、远程跳过、上限截断、异常和 `effect_id` 去重；Fabric GameTest 在真实 Minecraft 服务端使用仓库内测试提供方验证僵尸近战命中合并附加剂量和状态效果，并继续验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品 NBT 属性、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。
+必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。服务端单元回归覆盖攻击附效的无认领、单认领、多认领、未绑定攻击者、远程跳过、上限截断、异常和 `effect_id` 去重；Fabric GameTest 在真实 Minecraft 服务端使用仓库内测试提供方验证僵尸近战命中合并附加剂量和状态效果，并继续验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品属性组件、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。挥手包用例的假玩家取自功法库 `fabric` 的 `testFixtures`（`TestPlayers.detached`：正式网络处理器、不进玩家列表），与功法 fabric 同经源码组合解析。
 
 Minecraft 实体状态与身体 Store 之间目前没有跨系统持久化事务。同步失败记录日志并抛错，不继续原版扣血，不宣称可靠补偿或恰好一次世界副作用；框架内部的身体变更与成功回执仍为原子提交。Windows 手动游玩、专服多人及其他战斗模组兼容需要独立验收。
