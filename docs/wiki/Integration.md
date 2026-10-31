@@ -10,7 +10,7 @@
 python3 scripts/check_docs.py
 ```
 
-安装使用 `fabric/build/libs/` 内不带 `sources` 或 `dev` 后缀的重映射 JAR，并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。模组本身运行在服务端，单机由集成服务器执行，不要求客户端安装伤害适配。
+安装使用 `fabric/build/libs/` 内不带 `sources` 或 `dev` 后缀的重映射 JAR，并安装 Fabric API。构建会嵌入纯 Java 规则、Framework 服务端库与所需运行依赖。伤害结算只在服务端执行，单机由集成服务器执行；客户端同样安装本模组，伤害类型的[显示名键](Damage-Rules.md#显示名键)由它提供。
 
 本附属不创建身体，玩家身体由必装 Human Addon 提供。八仓按适用端整套安装，开发运行统一应用 Framework 的 `scripts/full-assembly.gradle`。健康宿主和伤害效果集成都必须装配，缺接线启动报错；所有宿主明确返回该实体未绑定时才保留原版行为。本包不依赖 Human 内部类，其他生物附属采用相同接口。
 

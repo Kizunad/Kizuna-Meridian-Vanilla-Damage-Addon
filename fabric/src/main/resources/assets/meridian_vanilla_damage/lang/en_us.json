@@ -1,0 +1,11 @@
+{
+  "damage_kind.meridian.blunt": "Blunt",
+  "damage_kind.meridian.cutting": "Cutting",
+  "damage_kind.meridian.piercing": "Piercing",
+  "damage_kind.meridian.heat": "Heat",
+  "damage_kind.meridian.cold": "Cold",
+  "damage_kind.meridian.electric": "Electric",
+  "damage_kind.meridian.corrosive": "Corrosive",
+  "damage_kind.meridian.toxic": "Toxic",
+  "damage_kind.meridian.custom": "Custom"
+}
