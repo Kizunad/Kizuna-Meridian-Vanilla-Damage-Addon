@@ -1,20 +1,19 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.damage.DamageSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.util.Hand;
-
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.LivingEntity;
 
 /** 一次出手的做功前系数；嵌套攻击各自持有上下文，异常退出也释放。 */
 public final class VanillaStrikeContext implements AutoCloseable {
     private static final Map<LivingEntity, Deque<VanillaStrikeContext>> strikes = new IdentityHashMap<>();
-    private static final Map<ServerPlayerEntity, Long> pendingSwings = new IdentityHashMap<>();
+    private static final Map<ServerPlayer, Long> pendingSwings = new IdentityHashMap<>();
     private static final long SWING_PACKET_GRACE_TICKS = 1;
     private final LivingEntity attacker;
     private final DamageSource source;
@@ -30,16 +29,16 @@ public final class VanillaStrikeContext implements AutoCloseable {
 
     public static VanillaStrikeContext attack(LivingEntity attacker, DamageSource source) {
         // 客户端只预测动画，不读取服务端身体或记账。
-        if (attacker.getWorld().isClient) {
+        if (attacker.level().isClientSide) {
             return null;
         }
         return new VanillaStrikeContext(attacker, source);
     }
 
     public static VanillaStrikeContext damage(DamageSource source) {
-        // 直接调用 damage 的自定义近战也建立独立出手，盾挡之前完成记账。
-        if (!(source.getAttacker() instanceof LivingEntity attacker) || attacker.getWorld().isClient
-                || !source.isIn(VanillaDamageTypeTags.MELEE) || current(attacker, source) != null) {
+        // 直接调用 hurt 的自定义近战也建立独立出手，盾挡之前完成记账。
+        if (!(source.getEntity() instanceof LivingEntity attacker) || attacker.level().isClientSide
+                || !source.is(VanillaDamageTypeTags.MELEE) || current(attacker, source) != null) {
             return null;
         }
         return new VanillaStrikeContext(attacker, source);
@@ -61,28 +60,28 @@ public final class VanillaStrikeContext implements AutoCloseable {
             return null;
         }
         VanillaStrikeContext context = stack.peek();
-        if (!context.source.getTypeRegistryEntry().equals(source.getTypeRegistryEntry())) {
+        if (!context.source.typeHolder().equals(source.typeHolder())) {
             return null;
         }
         return context;
     }
 
-    public static void attacked(ServerPlayerEntity player) {
+    public static void attacked(ServerPlayer player) {
         // 实体攻击包后通常紧接主手挥手包，后者只播放动画而不重复收费。
-        pendingSwings.put(player, player.getWorld().getTime());
+        pendingSwings.put(player, player.level().getGameTime());
     }
 
-    public static void swing(ServerPlayerEntity player, Hand hand) {
+    public static void swing(ServerPlayer player, InteractionHand hand) {
         // 没有对应实体攻击的主手挥手视为挥空出手，副手使用动画不计近战做功。
-        if (hand != Hand.MAIN_HAND) {
+        if (hand != InteractionHand.MAIN_HAND) {
             return;
         }
         Long attackTick = pendingSwings.remove(player);
-        long now = player.getWorld().getTime();
+        long now = player.level().getGameTime();
         if (attackTick != null && now - attackTick <= SWING_PACKET_GRACE_TICKS) {
             return;
         }
-        try (var ignored = attack(player, player.getDamageSources().playerAttack(player))) {
+        try (var ignored = attack(player, player.damageSources().playerAttack(player))) {
             // 没有受击目标，建立上下文本身已经完成出手记账。
         }
     }

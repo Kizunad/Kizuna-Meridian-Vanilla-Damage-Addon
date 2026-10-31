@@ -25,8 +25,8 @@ Damage 已实现肌肉力量系数、实际出手侧、护甲前单次缩放、�
 | `server/src/main/resources/meridian-vanilla-damage.toml` | 新增完整 `[muscle]` 默认节 |
 | `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/VanillaDamageFabric.java` | 护甲前缩放，保存原始附效基数，标签优先分类，拆分结算阶段 |
 | `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/VanillaDamageTypeTags.java` | 新增标签、出手侧、分类覆盖及加载/使用冲突校验 |
-| `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/mixin/LivingEntityDamageMixin.java` | 普通生物 `applyDamage` 参数缩放 |
-| `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/mixin/PlayerEntityDamageMixin.java` | 玩家覆盖实现的 `applyDamage` 参数缩放 |
+| `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/mixin/LivingEntityDamageMixin.java` | 普通生物 `actuallyHurt` 参数缩放 |
+| `fabric/src/main/java/dev/kizuna/meridian/vanilla/fabric/mixin/PlayerEntityDamageMixin.java` | 玩家覆盖实现的 `actuallyHurt` 参数缩放 |
 | `fabric/build.gradle` | 完整开发装配补齐必需 Technique 产物并校验存在性 |
 | `server/src/test/java/dev/kizuna/meridian/vanilla/MuscleDamageTest.java` | 新增 5 项真实 Framework 规则回归 |
 | `fabric/src/gametest/java/dev/kizuna/meridian/vanilla/test/DamageGameTest.java` | 增加肌肉/标签 GameTest 与测试宿主普通做功分支 |
@@ -150,7 +150,7 @@ Damage 的旧 GameTest 运行目录配置含已移除的 `[particle]`，妨碍 H
 
 ## 交叉审阅返工 D1/D2 当前结论
 
-D1 将做功与系数读取提升到一次完整出手上下文：玩家 `attack`、生物 `tryAttack` 的所有目标（含原版横扫）共享一次提交前系数和一笔原子做功；每个目标仍在自己的护甲结算前缩放一次。盾挡、免疫和没有目标的主手挥空按“出手就记”处理。新增 `DamageGameTest.playerSweepUsesOneExertionAndOnePreStrikeCoefficient`、`shieldBlockStillRecordsOneExertion`、`handSwingPacketRecordsMissAndDoesNotChargeAttackTwice` 覆盖实际玩家攻击/横扫、盾挡、挥空与动画包去重。D2 将 `MuscleDamageTest.java` 的半伤输入改为 `HALF_COEFFICIENT`。
+D1 将做功与系数读取提升到一次完整出手上下文：玩家 `attack`、生物 `doHurtTarget` 的所有目标（含原版横扫）共享一次提交前系数和一笔原子做功；每个目标仍在自己的护甲结算前缩放一次。盾挡、免疫和没有目标的主手挥空按“出手就记”处理。新增 `DamageGameTest.playerSweepUsesOneExertionAndOnePreStrikeCoefficient`、`shieldBlockStillRecordsOneExertion`、`handSwingPacketRecordsMissAndDoesNotChargeAttackTwice` 覆盖实际玩家攻击/横扫、盾挡、挥空与动画包去重。D2 将 `MuscleDamageTest.java` 的半伤输入改为 `HALF_COEFFICIENT`。
 
 本轮复验确认当前 Human 已实现 `TechniqueRecoveryHost.submitEffect(EffectSubmission)`，默认装配构建不再受该接口阻塞；对应 H1 的执行中重入、稳定回执和失败重试另见返工结果文件。旧“Human 当前默认构建失败”是本报告原始运行时的历史事实，不代表返工后的状态。
 

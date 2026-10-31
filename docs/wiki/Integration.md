@@ -42,7 +42,7 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 伤害附属提供 [AttackEffectProvider](../../server/src/main/java/dev/kizuna/meridian/vanilla/AttackEffectProvider.java)，并在自己的 `fabric.mod.json` 中注册 `meridian_attack_effect`。Damage 在服务端主线程只对已绑定身体的近战攻击者查询快照，然后按 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 编解码上下文和方案。提供方不依赖 Damage 的内部 Java 类之外的身体实现，也不能上传伤害来源、目标部位或原版剂量。
 
-`handled` 方案最多一个；附加剂量与原版剂量共用一次局部护甲和身体事务，状态效果在 `damage` 返回时施加。远程来源、未绑定攻击者、提供方异常、非法方案和重复认领均跳过附效并保留原版伤害。`effect_id` 在同一目标上去重，`max_extra_ratio` 默认 4.0，配置可关闭整个入口。
+`handled` 方案最多一个；附加剂量与原版剂量共用一次局部护甲和身体事务，状态效果在 `hurt` 返回时施加。远程来源、未绑定攻击者、提供方异常、非法方案和重复认领均跳过附效并保留原版伤害。`effect_id` 在同一目标上去重，`max_extra_ratio` 默认 4.0，配置可关闭整个入口。
 
 提供方示例（只用于仓库 GameTest）在 `fabric/src/gametest/resources/fabric.mod.json` 注册；功法库等其他仓库应依赖本仓库 server JAR 并自行实现入口，本仓库不会修改它们。
 
