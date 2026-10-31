@@ -42,7 +42,7 @@ public abstract class LivingEntityDamageMixin {
 
     @Inject(method = "getDamageAfterArmorAbsorb", at = @At("HEAD"), cancellable = true)
     private void meridian$applyLocalArmor(DamageSource source, float amount, CallbackInfoReturnable<Float> callback) {
-        // 只替换全局护甲数值结算，后续 modifyAppliedDamage 继续执行原版非护甲机制。
+        // 只替换全局护甲数值结算，后续 getDamageAfterMagicAbsorb 继续执行原版非护甲机制。
         var replacement = VanillaDamageFabric.prepareArmor((LivingEntity) (Object) this, source, amount);
         if (replacement.isPresent()) {
             if (!source.is(DamageTypeTags.BYPASSES_ARMOR)) {
