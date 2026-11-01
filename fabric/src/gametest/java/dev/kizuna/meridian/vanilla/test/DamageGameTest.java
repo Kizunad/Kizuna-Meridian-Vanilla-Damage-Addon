@@ -56,7 +56,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static dev.kizuna.meridian.vanilla.test.DamageGameTestTicks.DEFAULT_TIMEOUT;
 
-/** 整体回归：真实 Player/LivingEntity、Mixin、Fabric 死亡事件与核心账本。 */
+/**
+ * 整体回归：真实 Player/LivingEntity、Mixin、Fabric 死亡事件与核心账本。
+ * 伤害直接调用 {@code hurtServer}：26.2 弃用的 {@code Entity.hurt} 在服务端只转调它，入口与断言不变。
+ */
 public final class DamageGameTest implements BodyHealthHost {
     private static final InMemoryBodyStore STORE = new InMemoryBodyStore(List.of(), List.of());
     private static volatile String attackEffectTarget;
@@ -100,7 +103,7 @@ public final class DamageGameTest implements BodyHealthHost {
         var player = context.makeMockPlayer(GameType.SURVIVAL);
         bind(player, "test:creature", "shell", 100);
         player.addEffect(new MobEffectInstance(MobEffects.ABSORPTION, 200, 0));
-        player.hurt(player.damageSources().generic(), 2);
+        player.hurtServer(context.getLevel(), player.damageSources().generic(), 2);
         context.assertTrue(body(player).revision() == 0, "吸收生命不应产生身体伤害");
 
         // 未登记模板没有覆盖，即使穿胸甲也不能借用原版的全局护甲保护。
@@ -112,13 +115,13 @@ public final class DamageGameTest implements BodyHealthHost {
         var attacker = context.spawn(EntityTypes.ZOMBIE, 6, 2, 6);
         var meleeDamage = player.damageSources().mobAttack(attacker);
         float before = player.getHealth();
-        player.hurt(meleeDamage, 4);
+        player.hurtServer(context.getLevel(), meleeDamage, 4);
         double lost = displayedBodyLoss(player, before);
         assertClose(context, lost, 4, "未覆盖部位不能享受全局护甲减伤");
         assertClose(context, body(player).partStates().get(0).hp(), 100 - lost,
                 "玩家实际扣血必须映射一次");
         long revision = body(player).revision();
-        player.hurt(meleeDamage, 4);
+        player.hurtServer(context.getLevel(), meleeDamage, 4);
         context.assertTrue(body(player).revision() == revision, "无敌帧不能重复伤害身体");
 
         // 外部死亡回调保留局部伤势；kill() 会先造成真实致死伤害，不适合验证此边界。
@@ -132,13 +135,13 @@ public final class DamageGameTest implements BodyHealthHost {
 
         var cow = context.spawn(EntityTypes.COW, 2, 2, 2);
         bind(cow, "test:creature", "shell", 100);
-        cow.hurt(cow.damageSources().generic(), 3);
+        cow.hurtServer(context.getLevel(), cow.damageSources().generic(), 3);
         context.assertTrue(body(cow).partStates().get(0).hp() == 97, "普通生物扣血必须映射一次");
 
         // 身体先判死时，等待伤害返回后同步原版死亡，不再生成一笔伪造伤害。
         var fragile = context.spawn(EntityTypes.COW, 4, 2, 4);
         bind(fragile, "test:creature", "shell", 1);
-        fragile.hurt(fragile.damageSources().generic(), 2);
+        fragile.hurtServer(context.getLevel(), fragile.damageSources().generic(), 2);
         context.assertTrue(body(fragile).vitality().dead() && !fragile.isAlive(), "身体死亡必须同步原版实体");
         context.assertTrue(body(fragile).revision() == 1, "反向同步不能重复提交伤害或死亡");
         context.succeed();
@@ -154,7 +157,7 @@ public final class DamageGameTest implements BodyHealthHost {
         ATTACK_EFFECT_CALLS.set(0);
         try {
             float before = target.getHealth();
-            target.hurt(target.damageSources().mobAttack(attacker), 2);
+            target.hurtServer(context.getLevel(), target.damageSources().mobAttack(attacker), 2);
             assertClose(context, displayedBodyLoss(target, before), 3, "测试攻击附效应与原版伤害合并一次");
             assertClose(context, 100 - body(target).partStates().get(0).hp(), 3,
                     "附加伤害必须进入同一身体事务");
@@ -163,7 +166,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
             target.invulnerableTime = 0;
             before = target.getHealth();
-            target.hurt(target.damageSources().mobAttack(attacker), 2);
+            target.hurtServer(context.getLevel(), target.damageSources().mobAttack(attacker), 2);
             assertClose(context, displayedBodyLoss(target, before), 2,
                     "同一 effect_id 对同一目标不能重复附加伤害");
             assertClose(context, 100 - body(target).partStates().get(0).hp(), 5,
@@ -184,7 +187,7 @@ public final class DamageGameTest implements BodyHealthHost {
         attackEffectFailureTarget = target.getStringUUID();
         try {
             float before = target.getHealth();
-            target.hurt(target.damageSources().mobAttack(attacker), 2);
+            target.hurtServer(context.getLevel(), target.damageSources().mobAttack(attacker), 2);
             assertClose(context, displayedBodyLoss(target, before), 2,
                     "提供方异常不能改变原版伤害剂量");
             assertClose(context, 100 - body(target).partStates().get(0).hp(), 2,
@@ -223,11 +226,11 @@ public final class DamageGameTest implements BodyHealthHost {
                 expected = vanillaArmorDamage(player, source, 4, player.getItemBySlot(slot), slot);
             }
             float before = player.getHealth();
-            player.hurt(source, 4);
+            player.hurtServer(context.getLevel(), source, 4);
             assertClose(context, displayedBodyLoss(player, before), expected, part + " 只应使用覆盖该部位的单件护甲");
             assertClose(context, 100 - body(player).partStates().get(0).hp(), expected, part + " 身体剂量应一致");
             long revision = body(player).revision();
-            player.hurt(source, 4);
+            player.hurtServer(context.getLevel(), source, 4);
             context.assertTrue(body(player).revision() == revision, "无敌帧不应重新选点或扣血");
             float strongerExpected = 2;
             if (slot != null) {
@@ -238,7 +241,7 @@ public final class DamageGameTest implements BodyHealthHost {
                 strongerExpected = (float) (2 - (2 - baseDamage) * durabilityMultiplier);
             }
             before = player.getHealth();
-            player.hurt(source, 6);
+            player.hurtServer(context.getLevel(), source, 6);
             assertClose(context, displayedBodyLoss(player, before), strongerExpected, "无敌帧内更强攻击只结算超过前次的差额");
             assertClose(context, 100 - body(player).partStates().get(0).hp(), expected + strongerExpected,
                     "无敌帧差额只追加一次身体剂量");
@@ -249,7 +252,7 @@ public final class DamageGameTest implements BodyHealthHost {
         emptySlot.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
         emptySlot.tick();
         float headBefore = emptySlot.getHealth();
-        emptySlot.hurt(emptySlot.damageSources().mobAttack(attacker), 4);
+        emptySlot.hurtServer(context.getLevel(), emptySlot.damageSources().mobAttack(attacker), 4);
         assertClose(context, displayedBodyLoss(emptySlot, headBefore), 4, "未戴头盔的头部不能借用胸甲保护");
 
         // 护甲之后仍用原版保护附魔和抗性，局部吸收由同套治疗集成继续处理。
@@ -264,7 +267,7 @@ public final class DamageGameTest implements BodyHealthHost {
         protectedPlayer.addEffect(new MobEffectInstance(MobEffects.ABSORPTION, 200, 0));
         float before = protectedPlayer.getHealth();
         var source = protectedPlayer.damageSources().mobAttack(attacker);
-        protectedPlayer.hurt(source, 4);
+        protectedPlayer.hurtServer(context.getLevel(), source, 4);
         assertClose(context, displayedBodyLoss(protectedPlayer, before), 0, "局部黄心完全抵挡剩余剂量");
         assertClose(context, 100 - body(protectedPlayer).partStates().get(0).hp(), 0, "吸收不能留下局部伤势");
 
@@ -272,7 +275,7 @@ public final class DamageGameTest implements BodyHealthHost {
         protectedPlayer.removeEffect(MobEffects.ABSORPTION);
         protectedPlayer.addEffect(new MobEffectInstance(MobEffects.ABSORPTION, 200, 0));
         long revision = body(protectedPlayer).revision();
-        protectedPlayer.hurt(source, 4);
+        protectedPlayer.hurtServer(context.getLevel(), source, 4);
         context.assertTrue(body(protectedPlayer).revision() == revision, "局部护甲后完全吸收不能留下伤势");
 
         // 原版 bypass armor 标签依旧绕过装备，但不强制绕过其余减免。
@@ -280,7 +283,7 @@ public final class DamageGameTest implements BodyHealthHost {
         protectedPlayer.removeAllEffects();
         protectedPlayer.setItemSlot(EquipmentSlot.CHEST, ItemStack.EMPTY);
         before = protectedPlayer.getHealth();
-        protectedPlayer.hurt(protectedPlayer.damageSources().fall(), 2);
+        protectedPlayer.hurtServer(context.getLevel(), protectedPlayer.damageSources().fall(), 2);
         assertClose(context, displayedBodyLoss(protectedPlayer, before), 2, "坠落必须保留绕过护甲的原版语义");
 
         // 物品自定义属性属于该件护甲，不能被材料的固定护甲值覆盖。
@@ -292,7 +295,7 @@ public final class DamageGameTest implements BodyHealthHost {
         custom.tick();
         before = custom.getHealth();
         var customSource = custom.damageSources().mobAttack(attacker);
-        custom.hurt(customSource, 4);
+        custom.hurtServer(context.getLevel(), customSource, 4);
         assertClose(context, displayedBodyLoss(custom, before),
                 CombatRules.getDamageAfterAbsorb(custom, 4, customSource, 10, 0), "物品组件护甲属性必须参与局部减伤");
 
@@ -304,7 +307,7 @@ public final class DamageGameTest implements BodyHealthHost {
         husk.tick();
         before = husk.getHealth();
         var huskSource = husk.damageSources().mobAttack(attacker);
-        husk.hurt(huskSource, 4);
+        husk.hurtServer(context.getLevel(), huskSource, 4);
         float huskExpected = CombatRules.getDamageAfterAbsorb(husk, 4, huskSource, 8, 2);
         assertClose(context, displayedBodyLoss(husk, before), huskExpected, "普通生物也只读取命中槽位护甲");
         assertClose(context, 100 - body(husk).partStates().get(0).hp(), huskExpected,
@@ -316,7 +319,7 @@ public final class DamageGameTest implements BodyHealthHost {
         unbound.tick();
         before = unbound.getHealth();
         var unboundSource = unbound.damageSources().mobAttack(attacker);
-        unbound.hurt(unboundSource, 4);
+        unbound.hurtServer(context.getLevel(), unboundSource, 4);
         assertClose(context, before - unbound.getHealth(),
                 CombatRules.getDamageAfterAbsorb(unbound, 4, unboundSource, 8, 2), "未绑定玩家应保留原版护甲");
         context.succeed();
@@ -338,7 +341,7 @@ public final class DamageGameTest implements BodyHealthHost {
             player.setItemSlot(EquipmentSlot.CHEST, chestplate);
             player.tick();
             float before = player.getHealth();
-            player.hurt(player.damageSources().mobAttack(attacker), 4);
+            player.hurtServer(context.getLevel(), player.damageSources().mobAttack(attacker), 4);
             double expectedDamage = 4 - 0.64 * sample[1];
             assertClose(context, displayedBodyLoss(player, before), expectedDamage, "耐久曲线须使用本次磨损前的耐久比例");
             assertClose(context, 100 - body(player).partStates().get(0).hp(), expectedDamage,
@@ -357,7 +360,7 @@ public final class DamageGameTest implements BodyHealthHost {
             player.setItemSlot(EquipmentSlot.CHEST, chestplate);
             player.tick();
             float before = player.getHealth();
-            player.hurt(player.damageSources().mobAttack(attacker), 4);
+            player.hurtServer(context.getLevel(), player.damageSources().mobAttack(attacker), 4);
             double expectedDamage = 1.6;
             if (remainingRatio == 0.25) {
                 expectedDamage = 2.08;
@@ -376,7 +379,7 @@ public final class DamageGameTest implements BodyHealthHost {
         unbreakablePlayer.setItemSlot(EquipmentSlot.CHEST, unbreakable);
         unbreakablePlayer.tick();
         float before = unbreakablePlayer.getHealth();
-        unbreakablePlayer.hurt(unbreakablePlayer.damageSources().mobAttack(attacker), 4);
+        unbreakablePlayer.hurtServer(context.getLevel(), unbreakablePlayer.damageSources().mobAttack(attacker), 4);
         assertClose(context, displayedBodyLoss(unbreakablePlayer, before), 3.36, "无耐久物品不受耐久曲线削弱");
         assertClose(context, 100 - body(unbreakablePlayer).partStates().get(0).hp(), 3.36,
                 "无耐久物品的身体剂量应一致");
@@ -427,7 +430,7 @@ public final class DamageGameTest implements BodyHealthHost {
         player.tick();
         float before = player.getHealth();
         var source = player.damageSources().mobAttack(attacker);
-        player.hurt(source, STRIKE_DAMAGE);
+        player.hurtServer(context.getLevel(), source, STRIKE_DAMAGE);
         double expected = CombatRules.getDamageAfterAbsorb(player, (float) (STRIKE_DAMAGE * BOOST), source,
                 CHEST_ARMOR, CHEST_TOUGHNESS);
         assertClose(context, displayedBodyLoss(player, before), expected, "玩家路径必须在护甲前只乘一次");
@@ -442,7 +445,7 @@ public final class DamageGameTest implements BodyHealthHost {
         cow.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
         cow.tick();
         float cowBefore = cow.getHealth();
-        cow.hurt(cow.damageSources().mobAttack(otherAttacker), STRIKE_DAMAGE);
+        cow.hurtServer(context.getLevel(), cow.damageSources().mobAttack(otherAttacker), STRIKE_DAMAGE);
         assertClose(context, cowBefore - cow.getHealth(), expected,
                 "无身体目标须先乘系数再走原版全身护甲");
         context.succeed();
@@ -471,7 +474,7 @@ public final class DamageGameTest implements BodyHealthHost {
         bindMuscles(exhausted, 0);
         var cow = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
         float before = cow.getHealth();
-        cow.hurt(cow.damageSources().mobAttack(exhausted), STRIKE_DAMAGE);
+        cow.hurtServer(context.getLevel(), cow.damageSources().mobAttack(exhausted), STRIKE_DAMAGE);
         assertClose(context, before - cow.getHealth(), EXHAUSTED_DAMAGE, "力竭应按配置系数继续造成伤害");
         context.assertTrue(body(exhausted).revision() == 0, "做功被拒不能留下任何部分疲劳");
         context.succeed();
@@ -604,7 +607,7 @@ public final class DamageGameTest implements BodyHealthHost {
         bindMuscles(attacker, BOOST);
         var cow = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
         float before = cow.getHealth();
-        cow.hurt(sources.noAggroMobAttack(attacker), STRIKE_DAMAGE);
+        cow.hurtServer(context.getLevel(), sources.noAggroMobAttack(attacker), STRIKE_DAMAGE);
         assertClose(context, before - cow.getHealth(), STRIKE_DAMAGE, "左主手不应读取右臂力量");
         var attackerBody = body(attacker);
         context.assertTrue(attackerBody.tissueStates().get(0).fatigue() > 0, "左主手没有记做功");
@@ -627,7 +630,7 @@ public final class DamageGameTest implements BodyHealthHost {
         ATTACK_EFFECT_CALLS.set(0);
         try {
             float before = target.getHealth();
-            target.hurt(source, STRIKE_DAMAGE);
+            target.hurtServer(context.getLevel(), source, STRIKE_DAMAGE);
             assertClose(context, displayedBodyLoss(target, before), STRIKE_DAMAGE * BOOST + 1,
                     "副手应取右臂，附效额外伤害不乘系数");
             context.assertTrue(ATTACK_EFFECT_CALLS.get() == 1, "自定义 melee 没有触发附效");
@@ -640,7 +643,7 @@ public final class DamageGameTest implements BodyHealthHost {
         var bothAttacker = context.makeMockPlayer(GameType.SURVIVAL);
         bindMuscles(bothAttacker, 1);
         var cow = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
-        cow.hurt(customSource(context, bothAttacker, "two_strike"), STRIKE_DAMAGE);
+        cow.hurtServer(context.getLevel(), customSource(context, bothAttacker, "two_strike"), STRIKE_DAMAGE);
         context.assertTrue(body(bothAttacker).tissueStates().stream().allMatch(tissue -> tissue.fatigue() > 0),
                 "双手标签必须给两臂都记做功");
         context.succeed();
