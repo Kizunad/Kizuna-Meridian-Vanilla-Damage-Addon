@@ -38,6 +38,9 @@ public class VanillaDamageTest {
         assertEquals(70, weights.get("left_thigh") + weights.get("right_thigh"), 0);
         assertEquals(5, weights.get("head"), 0);
         assertEquals(30, preferences.weights(body, "minecraft:skeleton").get("head"), 0);
+        var aimedLegWeights = preferences.weights(body, "minecraft:spider", "legs");
+        assertEquals(1, aimedLegWeights.get("left_thigh"), 0);
+        assertEquals(1, aimedLegWeights.get("right_thigh"), 0);
         assertEquals("head", preferences.select(body, "minecraft:skeleton", 0).orElseThrow().getPartId());
         assertEquals("right_thigh", preferences.select(body, "minecraft:spider", Math.nextDown(1.0))
                 .orElseThrow().getPartId());
@@ -75,6 +78,27 @@ public class VanillaDamageTest {
         assertTrue(preferences.weights(unknown, "minecraft:spider").values().stream().allMatch(weight -> weight == 1));
         assertThrows(IllegalArgumentException.class, () -> preferences.select(body, "minecraft:spider", 1));
 
+        assertEquals("left_thigh", preferences.select(body, "minecraft:spider", 0, "legs")
+                .orElseThrow().getPartId());
+        assertEquals("chest", preferences.select(body, "minecraft:spider", 0, "torso")
+                .orElseThrow().getPartId());
+        assertEquals("head", preferences.select(body, "minecraft:spider", 0, "head")
+                .orElseThrow().getPartId());
+        assertEquals(preferences.weights(body, "minecraft:spider"),
+                preferences.weights(body, "minecraft:spider", "missing"));
+        assertEquals("head", preferences.select(body, "minecraft:spider", 0, "missing")
+                .orElseThrow().getPartId());
+
+        DamagePreferences noAttackers = DamagePreferences.parse("""
+                hp_per_vanilla_hp = 1
+                [anatomies."human:adult"]
+                head = ["head"]
+                """);
+        assertEquals("head", noAttackers.select(body, "minecraft:player", 0, "head")
+                .orElseThrow().getPartId());
+        assertEquals("head", noAttackers.select(unknown, "minecraft:player", 0, "head")
+                .orElseThrow().getPartId());
+
         // 服务器可用整数配置比例；错误的结构和权重应在加载时明确拒绝。
         assertEquals(2, DamagePreferences.parse("hp_per_vanilla_hp = 1").damageHp(2), 0);
         assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse("hp_per_vanilla_hp = nan"));
@@ -106,6 +130,23 @@ public class VanillaDamageTest {
                 .replace("max_extra_ratio = 4.0", "max_extra_ratio = -1")));
         assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(configuration()
                 .replace("enabled = true", "enabled = \"yes\"")));
+    }
+
+    @Test
+    public void missingArmPartListIsRejected() {
+        String missingLeftParts = "hp_per_vanilla_hp = 1\n" + """
+                [muscle]
+                enabled = true
+                tissue_tag = "human:arm_muscle"
+                right_parts = ["right_upper_arm"]
+                min_coefficient = 0.25
+                max_coefficient = 2.0
+                exhausted_coefficient = 0.25
+                strike_force_ratio = 0.6
+                strike_power_ratio = 0.6
+                strike_seconds = 0.5
+                """;
+        assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(missingLeftParts));
     }
 
     @Test

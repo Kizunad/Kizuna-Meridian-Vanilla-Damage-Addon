@@ -204,6 +204,11 @@ exhausted_coefficient = 0.25
 strike_force_ratio = 0.6
 strike_power_ratio = 0.6
 strike_seconds = 0.5
+leg_tissue_tag = "human:leg_muscle"
+left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]
+right_leg = ["right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius"]
+leg_work_joules_per_vanilla_hp = 30.0
+leg_swing_seconds = 0.4
 
 # 每次命中按护甲后剂量 / 命中部位 HP 上限得比例，乘致伤类型系数后与门槛比较：
 # 低于门槛无僵直；否则僵直毫秒 = clamp(比例 × scale_millis, minimum_millis, maximum_millis)。

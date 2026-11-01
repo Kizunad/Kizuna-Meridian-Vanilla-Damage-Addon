@@ -244,9 +244,25 @@ public final class DamagePreferences {
     }
 
     public Map<String, Double> weights(BodySnapshot body, String attackerId) {
-        // 已毁部位仍可被命中，由身体模板策略处理溢出；实际移除的部位才退出候选。
-        List<String> candidates = body.getPartStatesList().stream()
-                .map(part -> part.getId()).toList();
+        return weights(body, attackerId, Optional.empty());
+    }
+
+    public Map<String, Double> weights(BodySnapshot body, String attackerId, String aimGroup) {
+        return weights(body, attackerId, Optional.ofNullable(aimGroup));
+    }
+
+    public Map<String, Double> weights(BodySnapshot body, String attackerId, Optional<String> aimGroup) {
+        // 已毁部位仍可被命中；带 aim 时在实际存在的声明部位中均匀选择。
+        List<String> candidates = candidates(body, aimGroup);
+        if (aimGroup.isPresent()) {
+            if (candidates.isEmpty()) {
+                // 目标没有该组或该组已不存在时，回到普通攻击者偏好路径。
+                return weights(body, attackerId, Optional.empty());
+            }
+            var aimedWeights = new LinkedHashMap<String, Double>();
+            candidates.forEach(part -> aimedWeights.put(part, 1.0));
+            return aimedWeights;
+        }
         Map<String, List<String>> anatomy = anatomies.get(body.getTemplate().getId());
         Map<String, Double> profile = attackers.get(attackerId);
         var weights = new LinkedHashMap<String, Double>();
@@ -273,12 +289,38 @@ public final class DamagePreferences {
         return weights;
     }
 
+    private List<String> candidates(BodySnapshot body, Optional<String> aimGroup) {
+        List<String> actualParts = body.getPartStatesList().stream()
+                .map(part -> part.getId()).toList();
+        if (aimGroup.isEmpty()) {
+            return actualParts;
+        }
+        Map<String, List<String>> anatomy = anatomies.get(body.getTemplate().getId());
+        if (anatomy == null) {
+            return List.of();
+        }
+        List<String> aimedParts = anatomy.get(aimGroup.get());
+        if (aimedParts == null) {
+            return List.of();
+        }
+        return aimedParts.stream().filter(actualParts::contains).toList();
+    }
+
     public Optional<HealthTarget> select(BodySnapshot body, String attackerId, double roll) {
+        return select(body, attackerId, roll, Optional.empty());
+    }
+
+    public Optional<HealthTarget> select(BodySnapshot body, String attackerId, double roll, String aimGroup) {
+        return select(body, attackerId, roll, Optional.ofNullable(aimGroup));
+    }
+
+    public Optional<HealthTarget> select(BodySnapshot body, String attackerId, double roll,
+                                         Optional<String> aimGroup) {
         // 随机数由服务端生成并注入，允许整体回归验证区间而不依赖统计碰运气。
         if (!Double.isFinite(roll) || roll < 0 || roll >= 1) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ROLL);
         }
-        Map<String, Double> weights = weights(body, attackerId);
+        Map<String, Double> weights = weights(body, attackerId, aimGroup);
         double totalWeight = weights.values().stream().mapToDouble(Double::doubleValue).sum();
         double remaining = roll * totalWeight;
         String lastCandidate = null;

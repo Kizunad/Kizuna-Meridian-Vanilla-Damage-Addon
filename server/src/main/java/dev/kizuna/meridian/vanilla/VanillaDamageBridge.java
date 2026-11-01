@@ -65,6 +65,18 @@ public final class VanillaDamageBridge {
     }
 
     public double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip) {
+        // 手臂近战沿用固定做功参数；腿部命中通过专用入口按原版伤害换算做功。
+        return exertStrike(subjectId, mainArm, grip, MuscleRules.Group.ARMS, 0);
+    }
+
+    public double exertLegStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip,
+                                 double vanillaDamage) {
+        // 腿部每次摆腿按原版伤害换算焦耳，组织内均分同一段腿部做功。
+        return exertStrike(subjectId, mainArm, grip, MuscleRules.Group.LEGS, vanillaDamage);
+    }
+
+    private double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip,
+                               MuscleRules.Group group, double vanillaDamage) {
         // 先用权威快照计算系数，再由同一宿主原子提交整组做功；关闭时不查询或记账。
         MuscleRules rules = preferences.muscle();
         if (!rules.enabled()) {
@@ -76,7 +88,12 @@ public final class VanillaDamageBridge {
         }
         Binding binding = found.get();
         BodySnapshot body = binding.body();
-        MuscleRules.Plan plan = rules.plan(body, mainArm, grip);
+        MuscleRules.Plan plan;
+        if (group == MuscleRules.Group.LEGS) {
+            plan = rules.planLeg(body, mainArm, grip, vanillaDamage);
+        } else {
+            plan = rules.plan(body, mainArm, grip);
+        }
         if (plan.loads().getLoadsCount() == 0) {
             return plan.coefficient();
         }
@@ -219,6 +236,16 @@ public final class VanillaDamageBridge {
 
     public Optional<PreparedHit> prepare(String subjectId, String sourceId, String attackerId,
                                          DamageKind kind, double roll) {
+        return prepare(subjectId, sourceId, attackerId, kind, roll, Optional.empty());
+    }
+
+    public Optional<PreparedHit> prepare(String subjectId, String sourceId, String attackerId,
+                                         DamageKind kind, double roll, String aimGroup) {
+        return prepare(subjectId, sourceId, attackerId, kind, roll, Optional.ofNullable(aimGroup));
+    }
+
+    public Optional<PreparedHit> prepare(String subjectId, String sourceId, String attackerId,
+                                         DamageKind kind, double roll, Optional<String> aimGroup) {
         // 护甲前确定唯一宿主与一次命中，后续减伤和身体提交都复用这一目标与版本。
         Optional<Binding> binding = inspect(subjectId);
         if (binding.isEmpty()) {
@@ -230,7 +257,7 @@ public final class VanillaDamageBridge {
             return Optional.empty();
         }
 
-        Optional<HealthTarget> target = preferences.select(body, attackerId, roll);
+        Optional<HealthTarget> target = preferences.select(body, attackerId, roll, aimGroup);
         return Optional.of(new PreparedHit(subjectId, sourceId, kind, binding.get(), target));
     }
 

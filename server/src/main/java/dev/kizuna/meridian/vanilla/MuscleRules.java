@@ -14,26 +14,40 @@ import java.util.List;
 import java.util.Set;
 
 /** 出手侧只选择实际组织，能力与疲劳均由 Framework 解释。 */
-public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coefficients coefficients, Strike strike) {
+public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coefficients coefficients, Strike strike,
+                          LegSettings legs) {
+    private static final String DEFAULT_LEG_TISSUE_TAG = "human:leg_muscle";
+    private static final double DEFAULT_LEG_WORK_JOULES_PER_VANILLA_HP = 30.0;
+    private static final double DEFAULT_LEG_SWING_SECONDS = 0.4;
+    private static final Set<String> DEFAULT_LEFT_LEG = Set.of(
+            "left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius");
+    private static final Set<String> DEFAULT_RIGHT_LEG = Set.of(
+            "right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius");
+
     public enum Arm { LEFT, RIGHT }
     public enum Grip { MAIN_HAND, OFF_HAND, TWO_HANDED }
+    public enum Group { ARMS, LEGS }
     public record Parts(Set<String> left, Set<String> right) { }
     public record Coefficients(double minimum, double maximum, double exhausted) { }
     public record Strike(double forceRatio, double powerRatio, double seconds) { }
+    public record LegSettings(String tissueTag, Parts parts, LegWork work) { }
+    public record LegWork(double joulesPerVanillaHp, double seconds) { }
     public record Plan(double coefficient, ExertTissues loads) { }
 
+    public MuscleRules(boolean enabled, String tissueTag, Parts parts, Coefficients coefficients, Strike strike) {
+        this(enabled, tissueTag, parts, coefficients, strike, defaultLegSettings());
+    }
+
     public static MuscleRules parse(TomlTable table) {
-        // 配置在加载时完整校验，已有配置缺节由调用方补入内置默认表。
+        // 配置在加载时完整校验，已有配置缺少腿法字段时使用内置腿部规则。
         if (!(table.get("enabled") instanceof Boolean enabled)
                 || !(table.get("tissue_tag") instanceof String tag)
                 || !tag.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE);
         }
-        Set<String> left = partIds(table, "left_parts");
-        Set<String> right = partIds(table, "right_parts");
-        if (left.stream().anyMatch(right::contains)) {
-            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE);
-        }
+        Set<String> left = requiredPartIds(table, "left_parts");
+        Set<String> right = requiredPartIds(table, "right_parts");
+        rejectOverlap(left, right);
         double minimum = positive(table, "min_coefficient");
         double maximum = positive(table, "max_coefficient");
         double exhausted = positive(table, "exhausted_coefficient");
@@ -42,13 +56,49 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         }
         var strike = new Strike(positive(table, "strike_force_ratio"), positive(table, "strike_power_ratio"),
                 positive(table, "strike_seconds"));
+        String legTag = optionalTag(table, "leg_tissue_tag", DEFAULT_LEG_TISSUE_TAG);
+        Set<String> leftLeg = partIds(table, "left_leg", DEFAULT_LEFT_LEG);
+        Set<String> rightLeg = partIds(table, "right_leg", DEFAULT_RIGHT_LEG);
+        rejectOverlap(leftLeg, rightLeg);
+        double legWork = optionalPositive(table, "leg_work_joules_per_vanilla_hp",
+                DEFAULT_LEG_WORK_JOULES_PER_VANILLA_HP);
+        double legSeconds = optionalPositive(table, "leg_swing_seconds", DEFAULT_LEG_SWING_SECONDS);
+        var legSettings = new LegSettings(legTag, new Parts(leftLeg, rightLeg),
+                new LegWork(legWork, legSeconds));
         return new MuscleRules(enabled, tag, new Parts(left, right),
-                new Coefficients(minimum, maximum, exhausted), strike);
+                new Coefficients(minimum, maximum, exhausted), strike, legSettings);
+    }
+
+    private static LegSettings defaultLegSettings() {
+        return new LegSettings(DEFAULT_LEG_TISSUE_TAG,
+                new Parts(DEFAULT_LEFT_LEG, DEFAULT_RIGHT_LEG),
+                new LegWork(DEFAULT_LEG_WORK_JOULES_PER_VANILLA_HP, DEFAULT_LEG_SWING_SECONDS));
+    }
+
+    private static String optionalTag(TomlTable table, String key, String fallback) {
+        Object configured = table.get(key);
+        if (configured == null) {
+            return fallback;
+        }
+        if (!(configured instanceof String tag) || !tag.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE + ": " + key);
+        }
+        return tag;
     }
 
     private static double positive(TomlTable table, String key) {
-        // 非有限值和零负值不能形成有效做功请求。
-        if (!(table.get(key) instanceof Number number)) {
+        return optionalPositive(table, key, Double.NaN);
+    }
+
+    private static double optionalPositive(TomlTable table, String key, double fallback) {
+        Object configured = table.get(key);
+        if (configured == null) {
+            if (Double.isFinite(fallback)) {
+                return fallback;
+            }
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE + ": " + key);
+        }
+        if (!(configured instanceof Number number)) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE + ": " + key);
         }
         double value = number.doubleValue();
@@ -58,9 +108,24 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         return value;
     }
 
-    private static Set<String> partIds(TomlTable table, String key) {
-        // 两侧分组必须非空且无重复，防止同一肌肉被重复记账。
-        if (!(table.get(key) instanceof TomlArray values) || values.isEmpty()) {
+    private static Set<String> partIds(TomlTable table, String key, Set<String> fallback) {
+        Object configured = table.get(key);
+        if (configured == null) {
+            return Set.copyOf(fallback);
+        }
+        return parsePartIds(configured, key);
+    }
+
+    private static Set<String> requiredPartIds(TomlTable table, String key) {
+        Object configured = table.get(key);
+        if (configured == null) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE + ": " + key);
+        }
+        return parsePartIds(configured, key);
+    }
+
+    private static Set<String> parsePartIds(Object configured, String key) {
+        if (!(configured instanceof TomlArray values) || values.isEmpty()) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE + ": " + key);
         }
         var result = new HashSet<String>();
@@ -72,39 +137,108 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         return Set.copyOf(result);
     }
 
+    private static void rejectOverlap(Set<String> left, Set<String> right) {
+        if (left.stream().anyMatch(right::contains)) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE);
+        }
+    }
+
     public Plan plan(BodySnapshot snapshot, Arm mainArm, Grip grip) {
+        return plan(snapshot, mainArm, grip, Group.ARMS, 0);
+    }
+
+    public Plan planLeg(BodySnapshot snapshot, Arm mainArm, Grip grip, double vanillaDamage) {
+        return plan(snapshot, mainArm, grip, Group.LEGS, vanillaDamage);
+    }
+
+    public Parts legParts() {
+        return legs.parts();
+    }
+
+    public String legTissueTag() {
+        return legs.tissueTag();
+    }
+
+    public double legWorkJoulesPerVanillaHp() {
+        return legs.work().joulesPerVanillaHp();
+    }
+
+    public double legSwingSeconds() {
+        return legs.work().seconds();
+    }
+
+    private Plan plan(BodySnapshot snapshot, Arm mainArm, Grip grip, Group group, double vanillaDamage) {
         // 使用做功前的同一快照，分子分母严格来自同一组出手组织。
         if (!enabled) {
             return new Plan(1, ExertTissues.getDefaultInstance());
         }
+        validateDamage(group, vanillaDamage);
         var body = BodyProtobuf.fromMessage(snapshot);
-        Set<String> selected = selectedParts(mainArm, grip);
+        Set<String> selected = selectedIds(mainArm, grip, group);
         List<Anatomy.TissueDefinition> muscles = body.structure().tissues().stream()
-                .filter(tissue -> selected.contains(tissue.partId().value()))
-                .filter(tissue -> tissue.tags().stream().anyMatch(tag -> tag.value().equals(tissueTag)))
+                .filter(tissue -> selected.contains(selectionId(tissue, group)))
+                .filter(tissue -> tissue.tags().stream().anyMatch(tag -> tag.value().equals(tissueTag(group))))
                 .toList();
         if (muscles.isEmpty()) {
             return new Plan(1, ExertTissues.getDefaultInstance());
         }
         double baseStrength = 0;
         double availableStrength = 0;
-        var loads = ExertTissues.newBuilder();
         for (var muscle : muscles) {
             var capacity = muscle.capacity();
             baseStrength += capacity.strengthNewtons();
             availableStrength += TissueCapabilities.available(body, muscle.id()).strengthNewtons();
-            loads.addLoads(load(muscle));
         }
         if (!Double.isFinite(baseStrength) || baseStrength <= 0 || !Double.isFinite(availableStrength)) {
             throw new IllegalStateException(VanillaDamageErrors.MUSCLE_CAPACITY);
         }
         double ratio = availableStrength / baseStrength;
         double coefficient = Math.max(coefficients.minimum(), Math.min(coefficients.maximum(), ratio));
-        return new Plan(coefficient, loads.build());
+        return new Plan(coefficient, loads(muscles, group, vanillaDamage));
     }
 
-    private ExertTissue load(Anatomy.TissueDefinition muscle) {
-        // 每块组织以自身基础力量与功率按配置比例承担同一段做功。
+    private static void validateDamage(Group group, double vanillaDamage) {
+        if (group == Group.LEGS && (!Double.isFinite(vanillaDamage) || vanillaDamage <= 0)) {
+            throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+        }
+    }
+
+    private ExertTissues loads(List<Anatomy.TissueDefinition> muscles, Group group, double vanillaDamage) {
+        if (group == Group.LEGS) {
+            return legLoads(muscles, vanillaDamage);
+        }
+        return armLoads(muscles);
+    }
+
+    private ExertTissues legLoads(List<Anatomy.TissueDefinition> muscles, double vanillaDamage) {
+        double swingSeconds = legs.work().seconds();
+        double totalWork = vanillaDamage * legs.work().joulesPerVanillaHp();
+        double legPower = totalWork / swingSeconds / muscles.size();
+        var loads = ExertTissues.newBuilder();
+        for (var muscle : muscles) {
+            loads.addLoads(legLoad(muscle, legPower, swingSeconds));
+        }
+        return loads.build();
+    }
+
+    private ExertTissue legLoad(Anatomy.TissueDefinition muscle, double legPower, double swingSeconds) {
+        return ExertTissue.newBuilder()
+                .setTissueId(muscle.id().value())
+                .setForceNewtons(0)
+                .setPowerWatts(legPower)
+                .setDurationSeconds(swingSeconds)
+                .build();
+    }
+
+    private ExertTissues armLoads(List<Anatomy.TissueDefinition> muscles) {
+        var loads = ExertTissues.newBuilder();
+        for (var muscle : muscles) {
+            loads.addLoads(armLoad(muscle));
+        }
+        return loads.build();
+    }
+
+    private ExertTissue armLoad(Anatomy.TissueDefinition muscle) {
         var capacity = muscle.capacity();
         return ExertTissue.newBuilder()
                 .setTissueId(muscle.id().value())
@@ -114,22 +248,39 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
                 .build();
     }
 
-    private Set<String> selectedParts(Arm mainArm, Grip grip) {
-        // 双手合并两组；副手取主手的相反侧。
+    private Set<String> selectedIds(Arm mainArm, Grip grip, Group group) {
+        Parts configured;
+        if (group == Group.ARMS) {
+            configured = parts;
+        } else {
+            configured = legs.parts();
+        }
         if (grip == Grip.TWO_HANDED) {
-            var both = new HashSet<>(parts.left());
-            both.addAll(parts.right());
+            var both = new HashSet<>(configured.left());
+            both.addAll(configured.right());
             return both;
         }
-        Arm selected;
+        Arm selected = mainArm;
         if (grip == Grip.OFF_HAND) {
             selected = mainArm == Arm.LEFT ? Arm.RIGHT : Arm.LEFT;
-        } else {
-            selected = mainArm;
         }
         if (selected == Arm.LEFT) {
-            return parts.left();
+            return configured.left();
         }
-        return parts.right();
+        return configured.right();
+    }
+
+    private String selectionId(Anatomy.TissueDefinition tissue, Group group) {
+        if (group == Group.LEGS) {
+            return tissue.id().value();
+        }
+        return tissue.partId().value();
+    }
+
+    private String tissueTag(Group group) {
+        if (group == Group.LEGS) {
+            return legs.tissueTag();
+        }
+        return tissueTag;
     }
 }

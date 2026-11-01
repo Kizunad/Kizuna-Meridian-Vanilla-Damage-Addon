@@ -127,7 +127,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         double coefficient = 1;
         if (rawDamage > 0 && source.is(VanillaDamageTypeTags.MELEE)
                 && source.getEntity() instanceof LivingEntity attacker) {
-            coefficient = VanillaStrikeContext.coefficient(attacker, source);
+            coefficient = VanillaStrikeContext.coefficient(attacker, source, rawDamage);
         }
         double scaledDamage = rawDamage * coefficient;
         if (!Double.isFinite(scaledDamage) || scaledDamage > Float.MAX_VALUE) {
@@ -138,11 +138,20 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     static double strikeCoefficient(LivingEntity attacker, DamageSource source) {
+        return strikeCoefficient(attacker, source, 0);
+    }
+
+    static double strikeCoefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
         // 出手侧由可信主手侧和伤害标签解释，不依赖目标有没有经脉身体。
         if (!source.is(VanillaDamageTypeTags.MELEE)) {
             return 1;
         }
-        return bridge.exertStrike(attacker.getStringUUID(), mainArm(attacker), VanillaDamageTypeTags.grip(source));
+        MuscleRules.Arm mainArm = mainArm(attacker);
+        MuscleRules.Grip grip = VanillaDamageTypeTags.grip(source);
+        if (source.is(VanillaDamageTypeTags.LEG)) {
+            return bridge.exertLegStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
+        }
+        return bridge.exertStrike(attacker.getStringUUID(), mainArm, grip);
     }
 
     public static double estimateStrikeCoefficient(BodyMessages.BodySnapshot attacker, LivingEntity entity,
@@ -182,7 +191,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         try {
             AttackSource attack = attackSource(source, sourceId);
             Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getStringUUID(),
-                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble());
+                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble(), attack.aimGroup());
             if (prepared.isEmpty()) {
                 return Optional.empty();
             }
@@ -203,7 +212,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
     }
 
-    private record AttackSource(String id, String attackerId, Entity attacker, DamageKind kind) { }
+    private record AttackSource(String id, String attackerId, Entity attacker, DamageKind kind,
+                                Optional<String> aimGroup) { }
     private record AttackDose(double amount, VanillaDamageBridge.AttackEffectResolution effect) { }
 
     private static AttackSource attackSource(DamageSource source, String sourceId) {
@@ -226,7 +236,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         } else {
             kind = VanillaDamageKinds.classify(sourceId, attackerId, edgedWeapon);
         }
-        return new AttackSource(sourceId, attackerId, attacker, kind);
+        return new AttackSource(sourceId, attackerId, attacker, kind, VanillaDamageTypeTags.aim(source));
     }
 
     private static VanillaDamageBridge.AttackEffectResolution attackEffect(

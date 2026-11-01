@@ -15,6 +15,7 @@ import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.InMemoryBodyStore;
 import dev.kizuna.meridian.vanilla.AttackEffectProtobuf;
 import dev.kizuna.meridian.vanilla.AttackEffectProvider;
+import dev.kizuna.meridian.vanilla.MuscleRules;
 import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import dev.kizuna.meridian.technique.fabric.testing.TestPlayers;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
@@ -647,6 +648,54 @@ public final class DamageGameTest implements BodyHealthHost {
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void taggedLegSourcesSelectLegsAndAimAnatomyGroup(GameTestHelper context) {
+        var attacker = context.makeMockPlayer(GameType.SURVIVAL);
+        attacker.setMainArm(HumanoidArm.LEFT);
+        bindLegMuscles(attacker);
+        var target = context.makeMockPlayer(GameType.SURVIVAL);
+        bind(target, "human:adult", "head", MUSCLE_HP);
+
+        var offHandSource = customSource(context, attacker, "leg_off_strike");
+        context.assertTrue(offHandSource.is(VanillaDamageTypeTags.LEG), "腿法来源遗漏 leg 标签");
+        context.assertTrue(VanillaDamageTypeTags.grip(offHandSource) == MuscleRules.Grip.OFF_HAND,
+                "腿法副手标签没有取副手侧腿");
+        float before = target.getHealth();
+        target.hurt(offHandSource, STRIKE_DAMAGE);
+        assertClose(context, displayedBodyLoss(target, before), STRIKE_DAMAGE,
+                "腿法来源应保留普通伤害剂量");
+        var attackerBody = body(attacker);
+        context.assertTrue(attackerBody.tissueStates().stream()
+                .filter(tissue -> tissue.id().value().startsWith("right_"))
+                .allMatch(tissue -> tissue.fatigue() > 0), "副手侧腿没有原子记账");
+        context.assertTrue(attackerBody.tissueStates().stream()
+                .filter(tissue -> tissue.id().value().startsWith("left_"))
+                .allMatch(tissue -> tissue.fatigue() == 0), "副手侧腿误消耗主手侧腿");
+
+        var twoHandedAttacker = context.makeMockPlayer(GameType.SURVIVAL);
+        bindLegMuscles(twoHandedAttacker);
+        var twoHandedTarget = context.makeMockPlayer(GameType.SURVIVAL);
+        bind(twoHandedTarget, "human:adult", "head", MUSCLE_HP);
+        var twoHandedSource = customSource(context, twoHandedAttacker, "leg_two_strike");
+        context.assertTrue(VanillaDamageTypeTags.grip(twoHandedSource) == MuscleRules.Grip.TWO_HANDED,
+                "腿法双手标签没有合并两条腿");
+        twoHandedTarget.hurt(twoHandedSource, STRIKE_DAMAGE);
+        context.assertTrue(body(twoHandedAttacker).tissueStates().stream()
+                .allMatch(tissue -> tissue.fatigue() > 0), "双腿标签没有给两条腿都记做功");
+
+        // 该来源没有默认攻击者偏好，aim 仍应直接均匀命中声明的 anatomy 组。
+        var aimAttacker = context.spawn(EntityTypes.COW, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindLegMuscles(aimAttacker);
+        var aimSource = customSource(context, aimAttacker, "leg_aim_strike");
+        context.assertTrue(VanillaDamageTypeTags.aim(aimSource).orElseThrow().equals("head"),
+                "aim/head 标签没有解析为头部组");
+        context.assertTrue(VanillaDamageTypeTags.aim(aimSource).isPresent(), "腿法来源遗漏 aim 标签");
+        target.invulnerableTime = 0;
+        target.hurt(aimSource, STRIKE_DAMAGE);
+        context.assertTrue(body(target).revision() == 2, "aim/head 没有完成固定部位结算");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void conflictingKindTagsAreRejectedOnLoadAndUse(GameTestHelper context) {
         // 临时复用真实注册表成员校验加载入口，完成后恢复标签，不污染其他测试。
         var registry = context.getLevel().registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE);
@@ -714,6 +763,33 @@ public final class DamageGameTest implements BodyHealthHost {
         STORE.registerBody(BodyProtobuf.fromMessage(message.build()));
     }
 
+    private static void bindLegMuscles(LivingEntity entity) {
+        var pelvis = new Anatomy.PartId("pelvis");
+        var leftThigh = new Anatomy.PartId("left_thigh");
+        var leftLowerLeg = new Anatomy.PartId("left_lower_leg");
+        var rightThigh = new Anatomy.PartId("right_thigh");
+        var rightLowerLeg = new Anatomy.PartId("right_lower_leg");
+        var parts = List.of(pelvis, leftThigh, leftLowerLeg, rightThigh, rightLowerLeg);
+        var tissues = List.of(
+                testMuscle("left_gluteus_maximus", pelvis, "human:leg_muscle"),
+                testMuscle("left_rectus_femoris", leftThigh, "human:leg_muscle"),
+                testMuscle("left_gastrocnemius", leftLowerLeg, "human:leg_muscle"),
+                testMuscle("right_gluteus_maximus", pelvis, "human:leg_muscle"),
+                testMuscle("right_rectus_femoris", rightThigh, "human:leg_muscle"),
+                testMuscle("right_gastrocnemius", rightLowerLeg, "human:leg_muscle"));
+        var structure = new BodyStructure(parts.stream()
+                .map(part -> new Anatomy.PartDefinition(part, part.value(), MUSCLE_HP)).toList(), tissues,
+                List.of(), List.of(), List.of());
+        var snapshot = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION,
+                new BodyId(entity.getStringUUID()), new BodyTemplate.Reference(new DefinitionId("test:legs"), 1),
+                structure, Realm.WANDERING_QI,
+                parts.stream().map(part -> new AnatomyState.Part(part, MUSCLE_HP)).toList(),
+                tissues.stream().map(tissue -> new AnatomyState.Tissue(tissue.id(), MUSCLE_HP, 0)).toList(),
+                List.of(), List.of(), List.of(), new VitalityState(0, MUSCLE_ENDURANCE, 0, false /* dead */),
+                new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0);
+        STORE.registerBody(BodyProtobuf.fromMessage(BodyProtobuf.toMessage(snapshot)));
+    }
+
     private static BodyMessages.CapabilityModifier strengthModifier(double multiplier) {
         // 常值曲线覆盖整个做功时段，不通过伪造做功结果模拟峰值。
         var start = BodyMessages.CurvePoint.newBuilder().setValue(1).build();
@@ -732,10 +808,14 @@ public final class DamageGameTest implements BodyHealthHost {
     }
 
     private static Anatomy.TissueDefinition testMuscle(String id, Anatomy.PartId part) {
+        return testMuscle(id, part, "human:arm_muscle");
+    }
+
+    private static Anatomy.TissueDefinition testMuscle(String id, Anatomy.PartId part, String tag) {
         // 不依赖 Human 内部类，组织选择只使用公开标签和 Framework 定义。
         var capacity = new Anatomy.TissueCapacity(MUSCLE_STRENGTH, MUSCLE_POWER, MUSCLE_ENDURANCE);
         return new Anatomy.TissueDefinition(new Anatomy.TissueId(id), "肌肉", new DefinitionId("test:muscle"),
-                part, MUSCLE_HP, MUSCLE_HP, List.of(), capacity, 0, List.of(new DefinitionId("human:arm_muscle")));
+                part, MUSCLE_HP, MUSCLE_HP, List.of(), capacity, 0, List.of(new DefinitionId(tag)));
     }
 
     /** GameTest 专用提供方，真实走 meridian_attack_effect entrypoint 和 Protobuf 校验。 */

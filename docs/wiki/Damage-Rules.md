@@ -106,6 +106,8 @@ other = 5
 
 这是一次成功攻击后的身体选点，不改变怪物 AI、箭矢轨迹或碰撞箱。远程攻击取 `DamageSource.getEntity()` 的射手类型。未知模板、未知攻击者或所有可用组权重为零时，在实际存在的部位间等概率选取；新增未分组部位使用 `other`。只有从实际构型移除的部位才退出候选。没有可用部位时由核心策略按当前构型处理，不生成虚构肢体。
 
+伤害类型可以声明 `#meridian:aim/head`、`#meridian:aim/torso`、`#meridian:aim/legs`、`#meridian:aim/arms` 或 `#meridian:aim/other`，把候选收敛到目标模板的对应 anatomy 分组，再从实际存在的部位中均匀选取。模板没有该分组或该组没有实际部位时，退回无 `aim` 的攻击者偏好路径；未声明 `aim` 时继续使用上面的攻击者偏好。一个伤害类型最多属于一个 `aim/*` 标签，冲突会在标签加载和使用时拒绝。
+
 ## 致伤类型
 
 先读取下述 `kind/*` 标签；未指定时使用本表分类。
@@ -144,6 +146,8 @@ other = 5
 
 默认按攻击者实际主手侧选组织，左主手取左臂；`#meridian:off_hand` 取相反侧，`#meridian:two_handed` 合并两臂。两标签同时存在时双手优先。组织须同时匹配配置部位及组织标签。已绑定身体没有匹配组织时系数为 `1`，不提交空做功；这允许不具备该解剖结构的身体使用同一宿主接口。
 
+带 `#meridian:leg` 的来源改用腿部配置。腿部组织按组织 ID 选择左、右两组，因此臀大肌等共享骨盆部位时仍能区分左右；`#meridian:off_hand` 取主手相反侧的腿，`#meridian:two_handed` 合并两条腿，双手标签优先。腿部每次做功按原版伤害 HP 换算焦耳，在选中组织间均分；每块组织的功率为分得的焦耳数除以 `leg_swing_seconds`，力量字段为 `0`。
+
 一次出手先读取身体计算系数，再将所有选中肌肉作为一组 `ExertTissues`，经同一攻击者的
 `BodyHealthHost.exertion` 原子提交。玩家 `attack` 与生物 `doHurtTarget` 的整个调用共用一份出手上下文，
 横扫主目标和所有附带目标复用同一笔做功前系数；每个目标进入自己的护甲结算前只缩放一次。
@@ -175,6 +179,11 @@ exhausted_coefficient = 0.25
 strike_force_ratio = 0.6
 strike_power_ratio = 0.6
 strike_seconds = 0.5
+leg_tissue_tag = "human:leg_muscle"
+left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]
+right_leg = ["right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius"]
+leg_work_joules_per_vanilla_hp = 30.0
+leg_swing_seconds = 0.4
 ```
 
 `enabled = false` 时系数恒为 `1`，不查询攻击者身体、不做功；这是服主平衡开关，完整附属装配仍是必需条件。默认数值尚未经过游玩平衡校准。
@@ -223,11 +232,13 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 | 标签 | 含义 | 默认成员 |
 |---|---|---|
 | `#meridian:melee` | 肌肉系数、做功和攻击方附效入口 | `minecraft:player_attack`、`minecraft:mob_attack`、`minecraft:mob_attack_no_aggro` |
-| `#meridian:off_hand` | 副手侧出手 | 空 |
-| `#meridian:two_handed` | 双臂出手 | 空 |
+| `#meridian:leg` | 使用腿部肌肉组和腿部做功换算 | 空 |
+| `#meridian:off_hand` | 副手侧出手；带 `leg` 时取副手侧腿 | 空 |
+| `#meridian:two_handed` | 双臂出手；带 `leg` 时合并两条腿 | 空 |
+| `#meridian:aim/head`、`aim/torso`、`aim/legs`、`aim/arms`、`aim/other` | 在目标模板对应 anatomy 分组内均匀选取部位；缺组时退回普通偏好 | 空 |
 | `#meridian:kind/blunt`、`cutting`、`piercing`、`heat`、`cold`、`electric`、`corrosive`、`toxic` | 指定对应 Framework 致伤类型；后七项同样位于 `kind/` 下 | 空 |
 
-例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
+例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧和 `leg` 标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签或两个 `aim/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
 
 ## 攻击方附效
 

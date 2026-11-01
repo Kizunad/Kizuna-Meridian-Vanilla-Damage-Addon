@@ -40,6 +40,10 @@ public class MuscleDamageTest {
     private static final double CURVE_PEAK = 1.5;
     private static final long STRIKE_DURATION_MILLIS = 500;
     private static final long MODIFIER_DURATION_MILLIS = 1000;
+    private static final double LEG_WORK_JOULES_PER_HP = 30;
+    private static final double LEG_SWING_SECONDS = 0.4;
+    private static final double LEG_DAMAGE = 2;
+    private static final double LEG_POWER_PER_TISSUE = 50;
 
     @Test
     public void coefficientUsesHealthFatigueModifiersAndBounds() {
@@ -78,6 +82,25 @@ public class MuscleDamageTest {
         assertEquals(expectedBoth, both.coefficient(), EPSILON);
         assertEquals(List.of("left_muscle", "right_muscle"),
                 both.loads().getLoadsList().stream().map(ExertTissue::getTissueId).toList());
+    }
+
+    @Test
+    public void legRulesSelectOppositeSideAndDistributeVanillaWork() {
+        MuscleRules rules = preferences().muscle();
+        BodyMessages.BodySnapshot body = legBody();
+        assertEquals(LEG_WORK_JOULES_PER_HP, rules.legWorkJoulesPerVanillaHp(), EPSILON);
+        assertEquals(LEG_SWING_SECONDS, rules.legSwingSeconds(), EPSILON);
+
+        var offHand = rules.planLeg(body, RIGHT, OFF_HAND, LEG_DAMAGE);
+        assertEquals(List.of("left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"),
+                offHand.loads().getLoadsList().stream().map(ExertTissue::getTissueId).toList());
+        assertTrue(offHand.loads().getLoadsList().stream()
+                .allMatch(load -> load.getPowerWatts() == LEG_POWER_PER_TISSUE
+                        && load.getDurationSeconds() == LEG_SWING_SECONDS));
+
+        var twoHanded = rules.planLeg(body, LEFT, TWO_HANDED, LEG_DAMAGE);
+        assertEquals(6, twoHanded.loads().getLoadsCount());
+        assertTrue(twoHanded.loads().getLoadsList().stream().allMatch(load -> load.getForceNewtons() == 0));
     }
 
     @Test
@@ -225,6 +248,11 @@ public class MuscleDamageTest {
                 strike_force_ratio = 0.6
                 strike_power_ratio = 0.6
                 strike_seconds = 0.5
+                leg_tissue_tag = "human:leg_muscle"
+                left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]
+                right_leg = ["right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius"]
+                leg_work_joules_per_vanilla_hp = 30.0
+                leg_swing_seconds = 0.4
                 """.formatted(enabled);
     }
 
@@ -265,10 +293,40 @@ public class MuscleDamageTest {
         return BodyProtobuf.toMessage(body);
     }
 
+    private static BodyMessages.BodySnapshot legBody() {
+        var pelvis = new Anatomy.PartId("pelvis");
+        var leftThigh = new Anatomy.PartId("left_thigh");
+        var leftLowerLeg = new Anatomy.PartId("left_lower_leg");
+        var rightThigh = new Anatomy.PartId("right_thigh");
+        var rightLowerLeg = new Anatomy.PartId("right_lower_leg");
+        var parts = List.of(pelvis, leftThigh, leftLowerLeg, rightThigh, rightLowerLeg);
+        var definitions = List.of(
+                muscle("left_gluteus_maximus", pelvis, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("left_rectus_femoris", leftThigh, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("left_gastrocnemius", leftLowerLeg, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("right_gluteus_maximus", pelvis, RIGHT_STRENGTH, "human:leg_muscle"),
+                muscle("right_rectus_femoris", rightThigh, RIGHT_STRENGTH, "human:leg_muscle"),
+                muscle("right_gastrocnemius", rightLowerLeg, RIGHT_STRENGTH, "human:leg_muscle"));
+        var structure = new BodyStructure(parts.stream()
+                .map(part -> new Anatomy.PartDefinition(part, part.value(), MAX_HP)).toList(), definitions,
+                List.of(), List.of(), List.of());
+        var body = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION, new BodyId("test:legs"),
+                new BodyTemplate.Reference(new DefinitionId("test:legs"), 1), structure, Realm.WANDERING_QI,
+                parts.stream().map(part -> new AnatomyState.Part(part, MAX_HP)).toList(),
+                definitions.stream().map(tissue -> new AnatomyState.Tissue(tissue.id(), MAX_HP, 0)).toList(),
+                List.of(), List.of(), List.of(), new VitalityState(0, ENDURANCE, 0, false /* dead */),
+                new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0);
+        return BodyProtobuf.toMessage(body);
+    }
+
     private static Anatomy.TissueDefinition muscle(String id, Anatomy.PartId part, double strength) {
+        return muscle(id, part, strength, "human:arm_muscle");
+    }
+
+    private static Anatomy.TissueDefinition muscle(String id, Anatomy.PartId part, double strength, String tag) {
         // 肌肉标签是唯一选择依据，不向规则引入 Human 实现依赖。
         return new Anatomy.TissueDefinition(new Anatomy.TissueId(id), "肌肉", new DefinitionId("test:muscle"),
                 part, MAX_HP, MAX_HP, List.of(), new Anatomy.TissueCapacity(strength, POWER, ENDURANCE), 0,
-                List.of(new DefinitionId("human:arm_muscle")));
+                List.of(new DefinitionId(tag)));
     }
 }

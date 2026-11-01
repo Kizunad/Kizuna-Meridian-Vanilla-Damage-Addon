@@ -19,13 +19,20 @@ public final class VanillaStrikeContext implements AutoCloseable {
     private static final long SWING_PACKET_GRACE_TICKS = 1;
     private final LivingEntity attacker;
     private final DamageSource source;
-    private final double coefficient;
+    private final boolean legStrike;
+    private double coefficient;
+    private boolean coefficientReady;
 
     private VanillaStrikeContext(LivingEntity attacker, DamageSource source) {
-        // 在目标结算前读取一次身体并原子做功，后续所有目标复用结果。
+        // 手臂出手可立即记账；腿部做功需等目标的原版伤害量确定后再换算焦耳。
         this.attacker = attacker;
         this.source = source;
-        this.coefficient = VanillaDamageFabric.strikeCoefficient(attacker, source);
+        this.legStrike = source.is(VanillaDamageTypeTags.LEG);
+        this.coefficient = 1;
+        if (!legStrike) {
+            this.coefficient = VanillaDamageFabric.strikeCoefficient(attacker, source);
+            this.coefficientReady = true;
+        }
         strikes.computeIfAbsent(attacker, ignored -> new ArrayDeque<>()).push(this);
     }
 
@@ -67,13 +74,21 @@ public final class VanillaStrikeContext implements AutoCloseable {
         return new VanillaStrikeContext(attacker, source);
     }
 
-    static double coefficient(LivingEntity attacker, DamageSource source) {
+    static double coefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
         // 原版攻击上下文或直接伤害上下文都应已在护甲阶段之前建立。
         VanillaStrikeContext context = current(attacker, source);
         if (context == null) {
             throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_MISSING);
         }
-        return context.coefficient;
+        return context.coefficient(vanillaDamage);
+    }
+
+    private double coefficient(double vanillaDamage) {
+        if (!coefficientReady) {
+            coefficient = VanillaDamageFabric.strikeCoefficient(attacker, source, vanillaDamage);
+            coefficientReady = true;
+        }
+        return coefficient;
     }
 
     private static VanillaStrikeContext current(LivingEntity attacker, DamageSource source) {

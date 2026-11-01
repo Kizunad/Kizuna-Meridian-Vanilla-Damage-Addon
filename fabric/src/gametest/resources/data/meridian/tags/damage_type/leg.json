@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "meridian_damage_test:leg_off_strike",
+    "meridian_damage_test:leg_two_strike",
+    "meridian_damage_test:leg_aim_strike"
+  ]
+}
