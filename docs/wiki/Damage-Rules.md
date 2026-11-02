@@ -106,6 +106,8 @@ other = 5
 
 这是一次成功攻击后的身体选点，不改变怪物 AI、箭矢轨迹或碰撞箱。远程攻击取 `DamageSource.getEntity()` 的射手类型。未知模板、未知攻击者或所有可用组权重为零时，在实际存在的部位间等概率选取；新增未分组部位使用 `other`。只有从实际构型移除的部位才退出候选。没有可用部位时由核心策略按当前构型处理，不生成虚构肢体。
 
+伤害类型可以声明 `#meridian:aim/head`、`#meridian:aim/torso`、`#meridian:aim/legs`、`#meridian:aim/arms` 或 `#meridian:aim/other`，把候选收敛到目标模板的对应 anatomy 分组，再从实际存在的部位中均匀选取。模板没有该分组或该组没有实际部位时，退回无 `aim` 的攻击者偏好路径；未声明 `aim` 时继续使用上面的攻击者偏好。一个伤害类型最多属于一个 `aim/*` 标签，冲突会在标签加载和使用时拒绝。
+
 ## 致伤类型
 
 先读取下述 `kind/*` 标签；未指定时使用本表分类。
@@ -144,22 +146,32 @@ other = 5
 
 默认按攻击者实际主手侧选组织，左主手取左臂；`#meridian:off_hand` 取相反侧，`#meridian:two_handed` 合并两臂。两标签同时存在时双手优先。组织须同时匹配配置部位及组织标签。已绑定身体没有匹配组织时系数为 `1`，不提交空做功；这允许不具备该解剖结构的身体使用同一宿主接口。
 
+带 `#meridian:leg` 的来源改用腿部配置。腿部组织按组织 ID 选择左、右两组，因此臀大肌等共享骨盆部位时仍能区分左右；`#meridian:off_hand` 取主手相反侧的腿，`#meridian:two_handed` 合并两条腿，双手标签优先。腿部每次做功按原版伤害 HP 换算焦耳，在选中组织间均分；每块组织的功率为分得的焦耳数除以 `leg_swing_seconds`，力量字段为 `0`。
+
 一次出手先读取身体计算系数，再将所有选中肌肉作为一组 `ExertTissues`，经同一攻击者的
 `BodyHealthHost.exertion` 原子提交。玩家 `attack` 与生物 `doHurtTarget` 的整个调用共用一份出手上下文，
 横扫主目标和所有附带目标复用同一笔做功前系数；每个目标进入自己的护甲结算前只缩放一次。
-每块肌肉的力量、功率分别取其基础值乘配置比例，时长相同；双手自然按两臂基础功率分摊消耗。
+手臂做功量按原版剂量换算：`总焦耳 = 原版伤害 HP × work_joules_per_vanilla_hp`，
+`总功率 = 总焦耳 ÷ strike_seconds`。每块选中肌肉按基础爆发功率占比分摊总功率，力量字段为 `0`，
+时长统一为 `strike_seconds`；双手因此按两臂基础爆发功率分摊同一笔做功。默认配置注释说明当前焦耳口径。
 请求固定读取时的身体 ID、revision 和幂等 ID，宿主使用可信身份与时钟走 Framework 普通命令入口。
+
+出力比保持线性，不额外取指数。出手肌肉的可用力量仍高于力竭系数时，命中系数按比例连续下降；
+只有功率或耐力不足导致 Framework 拒绝整段做功时，才使用 `exhausted_coefficient`。
 
 做功按“出手就记”：目标被盾挡、免疫或拒绝命中仍记该次做功；无目标的主手挥手包记为挥空。
 被 Fabric `AttackEntityCallback` 拒绝的攻击（例如施放中的玩家）没有进入原版出手，不读身体、不记做功，
 也不与随后的挥手包配对；26.2 起该回调注入在 `Player.attack` 头部，出手上下文因此在方法体开始时建立。
 实体攻击后的首个主手动画包在同 tick 或下一 tick 内与攻击配对，不重复做功；副手动画不计主手出手。
-网络挥手包没有命中或按键类型，未配对的主手动画统一按挥空解释，因此不区分挖掘、交互产生的同类动画。
+挖掘期间的动画、物品使用、方块交互和实体交互产生的动画包都会被抑制；只有没有这些交互标记、
+也没有攻击配对的主手动画才按挥空处理。
 直接调用 `LivingEntity.hurt` 的带近战标签伤害若没有外层出手上下文，则该调用单独算一次出手；
 多目标自定义攻击应在外层用 `VanillaStrikeContext.attack` 包围全部目标，不能逐目标重新建立上下文。
 调用以栈隔离嵌套出手，正常返回和异常退出都会释放；下一次攻击重新读取系数并做功。
 
-Framework 按整个做功时段的最低能力倍率校验。`TISSUE_LOAD_EXCEEDED` 或 `MODULE_UNAVAILABLE` 表示本次力竭，整组做功不扣账，这一下仍按 `exhausted_coefficient` 命中；其他拒绝作为错误暴露。成功时使用提交前的系数，避免同一下因自身刚产生的疲劳重复变弱。动作栏不额外提示。
+Framework 按整个做功时段的最低能力倍率校验。`TISSUE_LOAD_EXCEEDED` 或 `MODULE_UNAVAILABLE` 表示本次力竭，
+整组做功不扣账，这一下仍按 `exhausted_coefficient` 命中；其他拒绝作为错误暴露。成功时使用提交前的系数，
+避免同一下因自身刚产生的疲劳重复变弱。动作栏不额外提示。
 
 配置修改后重启生效。已有文件完全缺少 `muscle` 节时读取内置默认值，不重写用户配置；显式配置必须完整，部位组非空、不重复且左右不重叠，标签为命名空间 ID，数值为有限正数，且 `min_coefficient <= exhausted_coefficient <= max_coefficient`。
 
@@ -172,9 +184,13 @@ right_parts = ["right_upper_arm", "right_forearm", "right_hand"]
 min_coefficient = 0.25
 max_coefficient = 2.0
 exhausted_coefficient = 0.25
-strike_force_ratio = 0.6
-strike_power_ratio = 0.6
+work_joules_per_vanilla_hp = 20.0
 strike_seconds = 0.5
+leg_tissue_tag = "human:leg_muscle"
+left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]
+right_leg = ["right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius"]
+leg_work_joules_per_vanilla_hp = 30.0
+leg_swing_seconds = 0.4
 ```
 
 `enabled = false` 时系数恒为 `1`，不查询攻击者身体、不做功；这是服主平衡开关，完整附属装配仍是必需条件。默认数值尚未经过游玩平衡校准。
@@ -222,18 +238,23 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 
 | 标签 | 含义 | 默认成员 |
 |---|---|---|
-| `#meridian:melee` | 肌肉系数、做功和攻击方附效入口 | `minecraft:player_attack`、`minecraft:mob_attack`、`minecraft:mob_attack_no_aggro` |
-| `#meridian:off_hand` | 副手侧出手 | 空 |
-| `#meridian:two_handed` | 双臂出手 | 空 |
-| `#meridian:kind/blunt`、`cutting`、`piercing`、`heat`、`cold`、`electric`、`corrosive`、`toxic` | 指定对应 Framework 致伤类型；后七项同样位于 `kind/` 下 | 空 |
+| `#meridian:melee` | 肌肉系数、做功和攻击方附效入口 | `minecraft:player_attack`、`minecraft:mob_attack`、`minecraft:mob_attack_no_aggro`、`minecraft:spear`、`minecraft:mace_smash` |
+| `#meridian:leg` | 使用腿部肌肉组和腿部做功换算 | 空 |
+| `#meridian:off_hand` | 副手侧出手；带 `leg` 时取副手侧腿 | 空 |
+| `#meridian:two_handed` | 双臂出手；带 `leg` 时合并两条腿 | 空 |
+| `#meridian:aim/head`、`aim/torso`、`aim/legs`、`aim/arms`、`aim/other` | 在目标模板对应 anatomy 分组内均匀选取部位；缺组时退回普通偏好 | 空 |
+| `#meridian:kind/blunt` | 指定钝击 | `minecraft:mace_smash` |
+| `#meridian:kind/cutting` | 指定切割 | 空 |
+| `#meridian:kind/piercing` | 指定穿刺 | `minecraft:spear` |
+| `#meridian:kind/heat`、`cold`、`electric`、`corrosive`、`toxic` | 指定对应 Framework 致伤类型 | 空 |
 
-例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
+例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧和 `leg` 标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签或两个 `aim/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
 
 ## 攻击方附效
 
-当攻击者是已绑定 Meridian 身体的 `LivingEntity`，且来源带 `#meridian:melee` 标签，服务端才会查询攻击者只读身体并询问 `meridian_attack_effect` 提供方。默认箭、药水和其他投射物不会调用此入口；攻击者未绑定时也不会调用。入口使用 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 的 Protobuf 字节，提供方只接收服务端生成的攻击者快照、目标 UUID、原版来源、分类、乘肌肉系数前的护甲前剂量和世界 tick。
+当攻击者是已绑定 Meridian 身体的 `LivingEntity`，且来源带 `#meridian:melee` 标签，服务端才会查询攻击者只读身体并询问 `meridian_attack_effect` 提供方。默认箭、药水和其他投射物不会调用此入口；攻击者未绑定时也不会调用。入口使用 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 的 Protobuf 字节。上下文的字段 7 `raw_damage_hp` 是乘肌肉系数后的原版护甲前剂量，字段 10 `vanilla_damage_hp` 是乘系数前的原版剂量，字段 11 `muscle_multiplier` 是本次肌肉系数；三者和服务端生成的攻击者快照、目标 UUID、原版来源、分类及世界 tick 一起提供给附效方。
 
-最多一个提供方可以返回 `handled = true`。提供方返回的 `extra_damage_hp` 不乘肌肉系数，先与已乘系数的原版护甲前剂量相加，再经过同一件局部护甲、抗性、保护附魔和吸收，最后和原伤害一起向同一部位提交一次身体事务。附加剂量默认不能超过未乘系数原版剂量的 4 倍，可在配置中修改；超出部分截断并记录日志。提供方抛错、返回非法方案或重复认领时，丢弃全部附效，原版伤害仍照常结算。
+最多一个提供方可以返回 `handled = true`。提供方返回的 `extra_damage_hp` 不乘肌肉系数，先与字段 7 的已缩放原版剂量相加，再经过同一件局部护甲、抗性、保护附魔和吸收，最后和原伤害一起向同一部位提交一次身体事务。附加剂量上限使用字段 10 的原版剂量乘 `max_extra_ratio`，默认不能超过 4 倍，可在配置中修改；超出部分截断并记录日志。提供方抛错、返回非法方案或重复认领时，丢弃全部附效，原版伤害仍照常结算。
 
 `status_effects` 暂存到当前伤害帧，在原版 `hurt` 返回阶段对仍存活的目标施加；目标已死亡则丢弃。同一目标上的非空 `effect_id` 只接受一次，用于横扫和多段命中去重。配置节如下：
 

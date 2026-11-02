@@ -127,22 +127,28 @@ public final class VanillaDamageFabric implements ModInitializer {
         double coefficient = 1;
         if (rawDamage > 0 && source.is(VanillaDamageTypeTags.MELEE)
                 && source.getEntity() instanceof LivingEntity attacker) {
-            coefficient = VanillaStrikeContext.coefficient(attacker, source);
+            coefficient = VanillaStrikeContext.coefficient(attacker, source, rawDamage);
         }
         double scaledDamage = rawDamage * coefficient;
         if (!Double.isFinite(scaledDamage) || scaledDamage > Float.MAX_VALUE) {
             throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
         }
-        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>()).push(new DamageFrame(rawDamage));
+        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>())
+                .push(new DamageFrame(rawDamage, coefficient));
         return (float) scaledDamage;
     }
 
-    static double strikeCoefficient(LivingEntity attacker, DamageSource source) {
+    static double strikeCoefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
         // 出手侧由可信主手侧和伤害标签解释，不依赖目标有没有经脉身体。
         if (!source.is(VanillaDamageTypeTags.MELEE)) {
             return 1;
         }
-        return bridge.exertStrike(attacker.getStringUUID(), mainArm(attacker), VanillaDamageTypeTags.grip(source));
+        MuscleRules.Arm mainArm = mainArm(attacker);
+        MuscleRules.Grip grip = VanillaDamageTypeTags.grip(source);
+        if (source.is(VanillaDamageTypeTags.LEG)) {
+            return bridge.exertLegStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
+        }
+        return bridge.exertStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
     }
 
     public static double estimateStrikeCoefficient(BodyMessages.BodySnapshot attacker, LivingEntity entity,
@@ -182,13 +188,13 @@ public final class VanillaDamageFabric implements ModInitializer {
         try {
             AttackSource attack = attackSource(source, sourceId);
             Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getStringUUID(),
-                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble());
+                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble(), attack.aimGroup());
             if (prepared.isEmpty()) {
                 return Optional.empty();
             }
             VanillaDamageBridge.PreparedHit hit = prepared.get();
             DamageFrame frame = frames.peek();
-            var effect = attackEffect(entity, source, attack, frame.rawDamage);
+            var effect = attackEffect(entity, source, attack, frame.rawDamage, frame.muscleMultiplier);
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
             float remainingDamage = localArmorDamage(entity, source, hit, dose.amount());
             frame.hit = hit;
@@ -203,7 +209,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
     }
 
-    private record AttackSource(String id, String attackerId, Entity attacker, DamageKind kind) { }
+    private record AttackSource(String id, String attackerId, Entity attacker, DamageKind kind,
+                                Optional<String> aimGroup) { }
     private record AttackDose(double amount, VanillaDamageBridge.AttackEffectResolution effect) { }
 
     private static AttackSource attackSource(DamageSource source, String sourceId) {
@@ -226,22 +233,25 @@ public final class VanillaDamageFabric implements ModInitializer {
         } else {
             kind = VanillaDamageKinds.classify(sourceId, attackerId, edgedWeapon);
         }
-        return new AttackSource(sourceId, attackerId, attacker, kind);
+        return new AttackSource(sourceId, attackerId, attacker, kind, VanillaDamageTypeTags.aim(source));
     }
 
     private static VanillaDamageBridge.AttackEffectResolution attackEffect(
-            LivingEntity target, DamageSource source, AttackSource attack, float rawDamage) {
-        // 附效读取乘系数前的原版剂量，故障保持原版伤害路径。
+            LivingEntity target, DamageSource source, AttackSource attack, float vanillaDamage,
+            double muscleMultiplier) {
+        // 附效同时读取乘系数前后的原版剂量，故障保持原版伤害路径。
         if (!source.is(VanillaDamageTypeTags.MELEE) || !(attack.attacker() instanceof LivingEntity attacker)) {
             return null;
         }
         try {
+            double scaledDamage = vanillaDamage * muscleMultiplier;
             var effect = bridge.prepareAttackEffect(target.getStringUUID(), attacker.getStringUUID(),
-                    attack.id(), attack.kind(), rawDamage, true /* melee */, target.level().getGameTime()).orElse(null);
+                    attack.id(), attack.kind(), scaledDamage, vanillaDamage, muscleMultiplier,
+                    true /* melee */, target.level().getGameTime()).orElse(null);
             if (effect != null && effect.truncated()) {
                 LOGGER.warn("{} target={} source={} rawHp={} extraHp={} maxRatio={}",
                         VanillaDamageErrors.ATTACK_EFFECT_PLAN, target.getStringUUID(), attack.id(),
-                        rawDamage, effect.extraDamageHp(), "configured");
+                        vanillaDamage, effect.extraDamageHp(), "configured");
             }
             return effect;
         } catch (RuntimeException failure) {
@@ -413,14 +423,16 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static final class DamageFrame {
         private final float rawDamage;
+        private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
         private DamageKind kind = DamageKind.CUSTOM;
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;
 
-        private DamageFrame(float rawDamage) {
-            // 附效上限仍以原版剂量为准，额外伤害不重复乘肌肉系数。
+        private DamageFrame(float rawDamage, double muscleMultiplier) {
+            // 附效上限仍以乘系数前的原版剂量为准，额外伤害不重复乘肌肉系数。
             this.rawDamage = rawDamage;
+            this.muscleMultiplier = muscleMultiplier;
         }
     }
 

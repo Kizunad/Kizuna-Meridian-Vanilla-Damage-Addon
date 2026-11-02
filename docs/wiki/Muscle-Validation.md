@@ -156,3 +156,19 @@ D1 将做功与系数读取提升到一次完整出手上下文：玩家 `attack
 
 当前完整命令、JUnit/GameTest 数量、各仓文档检查及 diff 检查记录见
 `~/Code/Kizuna-remote-session/handoff/cross-review-rework-2026-10-28-result.md`。
+
+## M3.5 I7c 增量验证
+
+本次增量把手臂做功统一到原版剂量口径：`work_joules_per_vanilla_hp = 20 J/HP`、
+`strike_seconds = 0.5 s`，总焦耳按选中肌肉的基础爆发功率占比分摊；腿部继续使用
+`leg_work_joules_per_vanilla_hp = 30 J/HP`、`leg_swing_seconds = 0.4 s`。出力比保持线性，
+只有功率或耐力不足导致 Framework 拒绝整段做功时才使用 `exhausted_coefficient`。
+
+攻击附效上下文新增字段 10 `vanilla_damage_hp` 与字段 11 `muscle_multiplier`，字段 7
+`raw_damage_hp` 保存乘系数后的原版剂量；附加剂量上限仍按字段 10 的原版剂量计算。主手
+挥空只在没有攻击配对且没有挖掘、物品、方块或实体交互标记时记做功；26.2 的矛和重锤
+分别进入 `melee`/`kind/piercing` 与 `melee`/`kind/blunt`。
+
+当前源码验证结果：`:server:test` 为 **22 项 JUnit，0 失败、0 错误、0 跳过**；
+`:fabric:runGametest` 为 **16 项必需 GameTest 全部通过**。其中新增或覆盖了原版剂量
+换算、线性出力、力竭阈值单调性、力竭失败码、负剂量拒绝、附效三字段、挥空与交互挥手配对。

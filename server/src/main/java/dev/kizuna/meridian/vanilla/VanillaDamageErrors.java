@@ -12,6 +12,7 @@ public final class VanillaDamageErrors {
     public static final String STRIKE_CONTEXT_MISSING = "近战伤害缺少出手上下文";
     public static final String STRIKE_CONTEXT_ORDER = "近战出手上下文顺序错误";
     public static final String DAMAGE_KIND_TAGS = "同一伤害类型不能属于多个 meridian:kind 标签";
+    public static final String DAMAGE_AIM_TAGS = "同一伤害类型不能属于多个 meridian:aim 标签";
     public static final String INVALID_INTEGRATION = "伤害效果集成认领重复、方案无效或宿主缺少健康回执";
     public static final String CONFIG = "原版伤害配置无效";
     public static final String NOT_INITIALIZED = "原版伤害附属尚未初始化，不能读取伤害规则";

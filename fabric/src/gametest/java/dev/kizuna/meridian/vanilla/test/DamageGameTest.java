@@ -15,14 +15,19 @@ import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.InMemoryBodyStore;
 import dev.kizuna.meridian.vanilla.AttackEffectProtobuf;
 import dev.kizuna.meridian.vanilla.AttackEffectProvider;
+import dev.kizuna.meridian.vanilla.MuscleRules;
 import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import dev.kizuna.meridian.technique.fabric.testing.TestPlayers;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.core.Holder;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
@@ -67,7 +72,7 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final AtomicInteger ATTACK_EFFECT_CALLS = new AtomicInteger();
     private static final double MUSCLE_HP = 100;
     private static final double MUSCLE_STRENGTH = 300;
-    private static final double MUSCLE_POWER = 100;
+    private static final double MUSCLE_POWER = 1000;
     private static final double MUSCLE_ENDURANCE = 1000;
     private static final double BOOST = 1.3;
     private static final double COLLAPSE = 0.85;
@@ -87,7 +92,8 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final double SWEEPING_MULTIPLIER = 0.75;
     private static final double ATTACK_DISTANCE = 1.5;
     private static final int SHIELD_READY_TICKS = 6;
-    private static final double STRIKE_FATIGUE = 3;
+    private static final double ARM_WORK_JOULES_PER_HP = 20;
+    private static final double ARM_STRIKE_SECONDS = 0.5;
     private static final BodyCommandHandler<String> COMMANDS = new BodyCommandHandler<>(
             (caller, command) -> Optional.of(caller), (caller, command, body) -> true,
             (caller, body) -> TimeAdvancePlan.newBuilder()
@@ -502,7 +508,8 @@ public final class DamageGameTest implements BodyHealthHost {
         assertClose(context, firstHealth - firstSweep.getHealth(), sweepDamage, "第一横扫目标系数错误");
         assertClose(context, secondHealth - secondSweep.getHealth(), sweepDamage, "第二横扫目标系数错误");
         context.assertTrue(body(attacker).revision() == 1, "一次横扫重复提交做功");
-        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "横扫疲劳非单笔");
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(),
+                fatigueForVanillaDamage(vanillaDamage), "横扫疲劳非单笔 vanilla=" + vanillaDamage);
         primary.invulnerableTime = 0;
         attacker.attack(primary);
         context.assertTrue(body(attacker).revision() == 2, "出手上下文没有释放");
@@ -527,7 +534,9 @@ public final class DamageGameTest implements BodyHealthHost {
         attacker.attack(defender);
         assertClose(context, defender.getHealth(), health, "盾没有实际挡住伤害");
         context.assertTrue(body(attacker).revision() == 1, "盾挡未按出手记一笔做功");
-        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "盾挡疲劳错误");
+        double vanillaDamage = attacker.getAttributeValue(Attributes.ATTACK_DAMAGE);
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(),
+                fatigueForVanillaDamage(vanillaDamage), "盾挡疲劳错误");
         context.succeed();
     }
 
@@ -548,6 +557,34 @@ public final class DamageGameTest implements BodyHealthHost {
         context.assertTrue(body(attacker).revision() == 2, "攻击和动画包重复做功");
         attacker.connection.handleAnimate(mainSwing);
         context.assertTrue(body(attacker).revision() == 3, "下一次挥空被旧实体攻击吞掉");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void miningAndItemUseSwingsDoNotCountAsEmptyAttacks(GameTestHelper context) {
+        // 挖掘期间的连续动画和物品使用动画都不能伪造一次近战挥空。
+        var attacker = TestPlayers.detached(context.getLevel(), "damage_swing_actions");
+        bindMuscles(attacker, BOOST);
+        var startMining = new ServerboundPlayerActionPacket(
+                ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, BlockPos.ZERO, Direction.UP);
+        attacker.connection.handlePlayerAction(startMining);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 0, "挖掘动画不应记近战做功");
+        var abortMining = new ServerboundPlayerActionPacket(
+                ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, BlockPos.ZERO, Direction.UP);
+        attacker.connection.handlePlayerAction(abortMining);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 1, "结束挖掘后的真正挥空应记做功");
+        var useItem = new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 0, 0, 0);
+        attacker.connection.handleUseItem(useItem);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 1, "物品使用动画不应记近战做功");
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 2, "交互后的下一次挥空应恢复计费");
+        var offHandUse = new ServerboundUseItemPacket(InteractionHand.OFF_HAND, 0, 0, 0);
+        attacker.connection.handleUseItem(offHandUse);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 3, "副手交互不应抑制主手挥空");
         context.succeed();
     }
 
@@ -650,6 +687,54 @@ public final class DamageGameTest implements BodyHealthHost {
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void taggedLegSourcesSelectLegsAndAimAnatomyGroup(GameTestHelper context) {
+        var attacker = context.makeMockPlayer(GameType.SURVIVAL);
+        attacker.setMainArm(HumanoidArm.LEFT);
+        bindLegMuscles(attacker);
+        var target = context.makeMockPlayer(GameType.SURVIVAL);
+        bind(target, "human:adult", "head", MUSCLE_HP);
+
+        var offHandSource = customSource(context, attacker, "leg_off_strike");
+        context.assertTrue(offHandSource.is(VanillaDamageTypeTags.LEG), "腿法来源遗漏 leg 标签");
+        context.assertTrue(VanillaDamageTypeTags.grip(offHandSource) == MuscleRules.Grip.OFF_HAND,
+                "腿法副手标签没有取副手侧腿");
+        float before = target.getHealth();
+        target.hurt(offHandSource, STRIKE_DAMAGE);
+        assertClose(context, displayedBodyLoss(target, before), STRIKE_DAMAGE,
+                "腿法来源应保留普通伤害剂量");
+        var attackerBody = body(attacker);
+        context.assertTrue(attackerBody.tissueStates().stream()
+                .filter(tissue -> tissue.id().value().startsWith("right_"))
+                .allMatch(tissue -> tissue.fatigue() > 0), "副手侧腿没有原子记账");
+        context.assertTrue(attackerBody.tissueStates().stream()
+                .filter(tissue -> tissue.id().value().startsWith("left_"))
+                .allMatch(tissue -> tissue.fatigue() == 0), "副手侧腿误消耗主手侧腿");
+
+        var twoHandedAttacker = context.makeMockPlayer(GameType.SURVIVAL);
+        bindLegMuscles(twoHandedAttacker);
+        var twoHandedTarget = context.makeMockPlayer(GameType.SURVIVAL);
+        bind(twoHandedTarget, "human:adult", "head", MUSCLE_HP);
+        var twoHandedSource = customSource(context, twoHandedAttacker, "leg_two_strike");
+        context.assertTrue(VanillaDamageTypeTags.grip(twoHandedSource) == MuscleRules.Grip.TWO_HANDED,
+                "腿法双手标签没有合并两条腿");
+        twoHandedTarget.hurt(twoHandedSource, STRIKE_DAMAGE);
+        context.assertTrue(body(twoHandedAttacker).tissueStates().stream()
+                .allMatch(tissue -> tissue.fatigue() > 0), "双腿标签没有给两条腿都记做功");
+
+        // 该来源没有默认攻击者偏好，aim 仍应直接均匀命中声明的 anatomy 组。
+        var aimAttacker = context.spawn(EntityTypes.COW, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindLegMuscles(aimAttacker);
+        var aimSource = customSource(context, aimAttacker, "leg_aim_strike");
+        context.assertTrue(VanillaDamageTypeTags.aim(aimSource).orElseThrow().equals("head"),
+                "aim/head 标签没有解析为头部组");
+        context.assertTrue(VanillaDamageTypeTags.aim(aimSource).isPresent(), "腿法来源遗漏 aim 标签");
+        target.invulnerableTime = 0;
+        target.hurt(aimSource, STRIKE_DAMAGE);
+        context.assertTrue(body(target).revision() == 2, "aim/head 没有完成固定部位结算");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void conflictingKindTagsAreRejectedOnLoadAndUse(GameTestHelper context) {
         // 临时复用真实注册表成员校验加载入口，完成后恢复标签，不污染其他测试。
         var registry = context.getLevel().registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE);
@@ -717,6 +802,33 @@ public final class DamageGameTest implements BodyHealthHost {
         STORE.registerBody(BodyProtobuf.fromMessage(message.build()));
     }
 
+    private static void bindLegMuscles(LivingEntity entity) {
+        var pelvis = new Anatomy.PartId("pelvis");
+        var leftThigh = new Anatomy.PartId("left_thigh");
+        var leftLowerLeg = new Anatomy.PartId("left_lower_leg");
+        var rightThigh = new Anatomy.PartId("right_thigh");
+        var rightLowerLeg = new Anatomy.PartId("right_lower_leg");
+        var parts = List.of(pelvis, leftThigh, leftLowerLeg, rightThigh, rightLowerLeg);
+        var tissues = List.of(
+                testMuscle("left_gluteus_maximus", pelvis, "human:leg_muscle"),
+                testMuscle("left_rectus_femoris", leftThigh, "human:leg_muscle"),
+                testMuscle("left_gastrocnemius", leftLowerLeg, "human:leg_muscle"),
+                testMuscle("right_gluteus_maximus", pelvis, "human:leg_muscle"),
+                testMuscle("right_rectus_femoris", rightThigh, "human:leg_muscle"),
+                testMuscle("right_gastrocnemius", rightLowerLeg, "human:leg_muscle"));
+        var structure = new BodyStructure(parts.stream()
+                .map(part -> new Anatomy.PartDefinition(part, part.value(), MUSCLE_HP)).toList(), tissues,
+                List.of(), List.of(), List.of());
+        var snapshot = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION,
+                new BodyId(entity.getStringUUID()), new BodyTemplate.Reference(new DefinitionId("test:legs"), 1),
+                structure, Realm.WANDERING_QI,
+                parts.stream().map(part -> new AnatomyState.Part(part, MUSCLE_HP)).toList(),
+                tissues.stream().map(tissue -> new AnatomyState.Tissue(tissue.id(), MUSCLE_HP, 0)).toList(),
+                List.of(), List.of(), List.of(), new VitalityState(0, MUSCLE_ENDURANCE, 0, false /* dead */),
+                new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0);
+        STORE.registerBody(BodyProtobuf.fromMessage(BodyProtobuf.toMessage(snapshot)));
+    }
+
     private static BodyMessages.CapabilityModifier strengthModifier(double multiplier) {
         // 常值曲线覆盖整个做功时段，不通过伪造做功结果模拟峰值。
         var start = BodyMessages.CurvePoint.newBuilder().setValue(1).build();
@@ -735,10 +847,14 @@ public final class DamageGameTest implements BodyHealthHost {
     }
 
     private static Anatomy.TissueDefinition testMuscle(String id, Anatomy.PartId part) {
+        return testMuscle(id, part, "human:arm_muscle");
+    }
+
+    private static Anatomy.TissueDefinition testMuscle(String id, Anatomy.PartId part, String tag) {
         // 不依赖 Human 内部类，组织选择只使用公开标签和 Framework 定义。
         var capacity = new Anatomy.TissueCapacity(MUSCLE_STRENGTH, MUSCLE_POWER, MUSCLE_ENDURANCE);
         return new Anatomy.TissueDefinition(new Anatomy.TissueId(id), "肌肉", new DefinitionId("test:muscle"),
-                part, MUSCLE_HP, MUSCLE_HP, List.of(), capacity, 0, List.of(new DefinitionId("human:arm_muscle")));
+                part, MUSCLE_HP, MUSCLE_HP, List.of(), capacity, 0, List.of(new DefinitionId(tag)));
     }
 
     /** GameTest 专用提供方，真实走 meridian_attack_effect entrypoint 和 Protobuf 校验。 */
@@ -802,5 +918,12 @@ public final class DamageGameTest implements BodyHealthHost {
         // 原版使用 float，身体使用 double，只容许对应的微小表示误差。
         context.assertTrue(Math.abs(actual - expected) < EPSILON,
                 message + ": actual=" + actual + ", expected=" + expected);
+    }
+
+    private static double fatigueForVanillaDamage(double vanillaDamage) {
+        // 单臂做功按原版剂量换算；功率与时长相乘后得到每次命中的焦耳数。
+        double powerWatts = vanillaDamage * ARM_WORK_JOULES_PER_HP / ARM_STRIKE_SECONDS;
+        double workJoules = powerWatts * ARM_STRIKE_SECONDS;
+        return workJoules / MUSCLE_ENDURANCE * MUSCLE_HP;
     }
 }

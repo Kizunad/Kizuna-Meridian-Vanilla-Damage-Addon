@@ -38,6 +38,9 @@ public class VanillaDamageTest {
         assertEquals(70, weights.get("left_thigh") + weights.get("right_thigh"), 0);
         assertEquals(5, weights.get("head"), 0);
         assertEquals(30, preferences.weights(body, "minecraft:skeleton").get("head"), 0);
+        var aimedLegWeights = preferences.weights(body, "minecraft:spider", "legs");
+        assertEquals(1, aimedLegWeights.get("left_thigh"), 0);
+        assertEquals(1, aimedLegWeights.get("right_thigh"), 0);
         assertEquals("head", preferences.select(body, "minecraft:skeleton", 0).orElseThrow().getPartId());
         assertEquals("right_thigh", preferences.select(body, "minecraft:spider", Math.nextDown(1.0))
                 .orElseThrow().getPartId());
@@ -75,6 +78,27 @@ public class VanillaDamageTest {
         assertTrue(preferences.weights(unknown, "minecraft:spider").values().stream().allMatch(weight -> weight == 1));
         assertThrows(IllegalArgumentException.class, () -> preferences.select(body, "minecraft:spider", 1));
 
+        assertEquals("left_thigh", preferences.select(body, "minecraft:spider", 0, "legs")
+                .orElseThrow().getPartId());
+        assertEquals("chest", preferences.select(body, "minecraft:spider", 0, "torso")
+                .orElseThrow().getPartId());
+        assertEquals("head", preferences.select(body, "minecraft:spider", 0, "head")
+                .orElseThrow().getPartId());
+        assertEquals(preferences.weights(body, "minecraft:spider"),
+                preferences.weights(body, "minecraft:spider", "missing"));
+        assertEquals("head", preferences.select(body, "minecraft:spider", 0, "missing")
+                .orElseThrow().getPartId());
+
+        DamagePreferences noAttackers = DamagePreferences.parse("""
+                hp_per_vanilla_hp = 1
+                [anatomies."human:adult"]
+                head = ["head"]
+                """);
+        assertEquals("head", noAttackers.select(body, "minecraft:player", 0, "head")
+                .orElseThrow().getPartId());
+        assertEquals("head", noAttackers.select(unknown, "minecraft:player", 0, "head")
+                .orElseThrow().getPartId());
+
         // 服务器可用整数配置比例；错误的结构和权重应在加载时明确拒绝。
         assertEquals(2, DamagePreferences.parse("hp_per_vanilla_hp = 1").damageHp(2), 0);
         assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse("hp_per_vanilla_hp = nan"));
@@ -109,12 +133,31 @@ public class VanillaDamageTest {
     }
 
     @Test
+    public void missingArmPartListIsRejected() {
+        String missingLeftParts = "hp_per_vanilla_hp = 1\n" + """
+                [muscle]
+                enabled = true
+                tissue_tag = "human:arm_muscle"
+                right_parts = ["right_upper_arm"]
+                min_coefficient = 0.25
+                max_coefficient = 2.0
+                exhausted_coefficient = 0.25
+                work_joules_per_vanilla_hp = 20.0
+                strike_seconds = 0.5
+                """;
+        assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(missingLeftParts));
+    }
+
+    @Test
     public void attackEffectProvidersRespectBindingMeleeClaimCapAndDeduplication() throws IOException {
         var store = new InMemoryBodyStore(List.of(body()), List.of());
         var providerCalls = new AtomicInteger();
         AttackEffectProvider provider = payload -> {
             providerCalls.incrementAndGet();
             var context = AttackEffectProtobuf.decodeContext(payload);
+            assertEquals(3, context.getRawDamageHp(), 0);
+            assertEquals(2, context.getVanillaDamageHp(), 0);
+            assertEquals(1.5, context.getMuscleMultiplier(), 0);
             return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.newBuilder()
                     .setHandled(true).setExtraDamageHp(2).setEffectId("test:cast")
                     .addStatusEffects(AttackEffectMessages.StatusEffect.newBuilder()
@@ -124,12 +167,12 @@ public class VanillaDamageTest {
                 List.of(provider));
 
         var resolution = bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
-                DamageKind.BLUNT, 2, true, 10).orElseThrow();
+                DamageKind.BLUNT, 3, 2, 1.5, true, 10).orElseThrow();
         assertEquals(2, resolution.extraDamageHp(), 0);
         assertEquals(1, resolution.statusEffects().size());
         bridge.markAttackEffectApplied("target", resolution.effectId());
         assertTrue(bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
-                DamageKind.BLUNT, 2, true, 10).isEmpty());
+                DamageKind.BLUNT, 3, 2, 1.5, true, 10).isEmpty());
         assertEquals(2, providerCalls.get());
 
         // 远程命中和未绑定攻击者均不询问提供方。
@@ -152,7 +195,7 @@ public class VanillaDamageTest {
         var duplicateClaim = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), preferences(), List.of(effects()),
                 List.of(provider, second));
         assertThrows(IllegalStateException.class, () -> duplicateClaim.prepareAttackEffect("target", "subject",
-                "minecraft:mob_attack", DamageKind.BLUNT, 2, true, 10));
+                "minecraft:mob_attack", DamageKind.BLUNT, 3, 2, 1.5, true, 10));
         assertThrows(IllegalArgumentException.class, () -> AttackEffectProtobuf.encodePlan(
                 AttackEffectMessages.AttackEffectPlan.newBuilder().setHandled(true).setExtraDamageHp(-1).build()));
     }

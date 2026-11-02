@@ -53,6 +53,10 @@ public final class AttackEffectProtobuf {
                 VanillaDamageErrors.ATTACK_EFFECT_CONTEXT);
         require(Double.isFinite(context.getRawDamageHp()) && context.getRawDamageHp() > 0,
                 VanillaDamageErrors.ATTACK_EFFECT_CONTEXT);
+        require(Double.isFinite(context.getVanillaDamageHp()) && context.getVanillaDamageHp() > 0,
+                VanillaDamageErrors.ATTACK_EFFECT_CONTEXT);
+        require(Double.isFinite(context.getMuscleMultiplier()) && context.getMuscleMultiplier() > 0,
+                VanillaDamageErrors.ATTACK_EFFECT_CONTEXT);
         require(context.getServerTick() >= 0, VanillaDamageErrors.ATTACK_EFFECT_CONTEXT);
     }
 

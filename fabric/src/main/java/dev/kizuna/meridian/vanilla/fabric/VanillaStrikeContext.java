@@ -9,23 +9,28 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 
 /** 一次出手的做功前系数；嵌套攻击各自持有上下文，异常退出也释放。 */
 public final class VanillaStrikeContext implements AutoCloseable {
     private static final Map<LivingEntity, Deque<VanillaStrikeContext>> strikes = new IdentityHashMap<>();
     private static final Map<ServerPlayer, Long> pendingSwings = new IdentityHashMap<>();
+    private static final Map<ServerPlayer, Long> suppressedSwings = new IdentityHashMap<>();
+    private static final Map<ServerPlayer, Long> miningPlayers = new IdentityHashMap<>();
     private static final Map<Player, Deque<AttackScope>> attackScopes = new IdentityHashMap<>();
     private static final long SWING_PACKET_GRACE_TICKS = 1;
+    private static final double DEFAULT_EMPTY_SWING_DAMAGE = 1.0;
     private final LivingEntity attacker;
     private final DamageSource source;
-    private final double coefficient;
+    private double coefficient;
+    private boolean coefficientReady;
 
     private VanillaStrikeContext(LivingEntity attacker, DamageSource source) {
-        // 在目标结算前读取一次身体并原子做功，后续所有目标复用结果。
+        // 所有出手都等原版剂量确定后再记账，挥空时由动画包提供一笔正剂量。
         this.attacker = attacker;
         this.source = source;
-        this.coefficient = VanillaDamageFabric.strikeCoefficient(attacker, source);
+        this.coefficient = 1;
         strikes.computeIfAbsent(attacker, ignored -> new ArrayDeque<>()).push(this);
     }
 
@@ -67,13 +72,29 @@ public final class VanillaStrikeContext implements AutoCloseable {
         return new VanillaStrikeContext(attacker, source);
     }
 
-    static double coefficient(LivingEntity attacker, DamageSource source) {
+    static double coefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
         // 原版攻击上下文或直接伤害上下文都应已在护甲阶段之前建立。
         VanillaStrikeContext context = current(attacker, source);
         if (context == null) {
             throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_MISSING);
         }
-        return context.coefficient;
+        return context.coefficient(vanillaDamage);
+    }
+
+    private double coefficient(double vanillaDamage) {
+        if (!coefficientReady) {
+            coefficient = VanillaDamageFabric.strikeCoefficient(attacker, source, vanillaDamage);
+            coefficientReady = true;
+        }
+        return coefficient;
+    }
+
+    private static double fallbackDamage(LivingEntity attacker) {
+        double attackDamage = attacker.getAttributeValue(Attributes.ATTACK_DAMAGE);
+        if (Double.isFinite(attackDamage) && attackDamage > 0) {
+            return attackDamage;
+        }
+        return DEFAULT_EMPTY_SWING_DAMAGE;
     }
 
     private static VanillaStrikeContext current(LivingEntity attacker, DamageSource source) {
@@ -94,6 +115,34 @@ public final class VanillaStrikeContext implements AutoCloseable {
         pendingSwings.put(player, player.level().getGameTime());
     }
 
+    public static void startMining(ServerPlayer player) {
+        // 挖掘可能跨越多个客户端挥手包，持续状态覆盖整段挖掘。
+        miningPlayers.put(player, player.level().getGameTime());
+    }
+
+    public static void abortMining(ServerPlayer player) {
+        // 取消挖掘后不吞掉下一次真正的挥空。
+        miningPlayers.remove(player);
+    }
+
+    public static void stopMining(ServerPlayer player) {
+        // 结束包与最后动画相邻时只吞掉这一包，后续挥空仍应收费。
+        miningPlayers.remove(player);
+        suppressNextSwing(player);
+    }
+
+    public static void suppressNextSwing(ServerPlayer player) {
+        // 物品、方块或实体交互的动画只表示交互反馈，不表示近战挥空。
+        suppressedSwings.put(player, player.level().getGameTime());
+    }
+
+    public static void clearPlayer(ServerPlayer player) {
+        // 断线时释放与玩家关联的包配对状态。
+        pendingSwings.remove(player);
+        suppressedSwings.remove(player);
+        miningPlayers.remove(player);
+    }
+
     public static void swing(ServerPlayer player, InteractionHand hand) {
         // 没有对应实体攻击的主手挥手视为挥空出手，副手使用动画不计近战做功。
         if (hand != InteractionHand.MAIN_HAND) {
@@ -104,20 +153,37 @@ public final class VanillaStrikeContext implements AutoCloseable {
         if (attackTick != null && now - attackTick <= SWING_PACKET_GRACE_TICKS) {
             return;
         }
-        try (var ignored = attack(player, player.damageSources().playerAttack(player))) {
-            // 没有受击目标，建立上下文本身已经完成出手记账。
+        if (miningPlayers.containsKey(player) || consumeSuppressedSwing(player, now)) {
+            return;
         }
+        double vanillaDamage = fallbackDamage(player);
+        try (var context = attack(player, player.damageSources().playerAttack(player))) {
+            if (context != null) {
+                context.coefficient(vanillaDamage);
+            }
+        }
+    }
+
+    private static boolean consumeSuppressedSwing(ServerPlayer player, long now) {
+        Long suppressedTick = suppressedSwings.remove(player);
+        if (suppressedTick == null) {
+            return false;
+        }
+        return now - suppressedTick <= SWING_PACKET_GRACE_TICKS;
     }
 
     static void expireSwings(long now) {
         // 超过相邻包的窗口后释放实体引用，不让旧攻击吞掉后续挥空。
         pendingSwings.entrySet().removeIf(entry -> now - entry.getValue() > SWING_PACKET_GRACE_TICKS);
+        suppressedSwings.entrySet().removeIf(entry -> now - entry.getValue() > SWING_PACKET_GRACE_TICKS);
     }
 
     static void clear() {
         // 世界停止后不保留实体、调用栈或挥手包身份。
         strikes.clear();
         pendingSwings.clear();
+        suppressedSwings.clear();
+        miningPlayers.clear();
         attackScopes.clear();
     }
 
@@ -125,11 +191,18 @@ public final class VanillaStrikeContext implements AutoCloseable {
     public void close() {
         // 包装入口的 finally 保证目标结算异常也不会污染下一次攻击。
         Deque<VanillaStrikeContext> stack = strikes.get(attacker);
-        if (stack == null || stack.pop() != this) {
+        if (stack == null || stack.isEmpty() || stack.peek() != this) {
             throw new IllegalStateException(VanillaDamageErrors.STRIKE_CONTEXT_ORDER);
         }
-        if (stack.isEmpty()) {
-            strikes.remove(attacker);
+        try {
+            if (!coefficientReady) {
+                coefficient(fallbackDamage(attacker));
+            }
+        } finally {
+            stack.pop();
+            if (stack.isEmpty()) {
+                strikes.remove(attacker);
+            }
         }
     }
 

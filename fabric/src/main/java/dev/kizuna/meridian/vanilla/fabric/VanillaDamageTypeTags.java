@@ -16,8 +16,20 @@ import net.minecraft.world.damagesource.DamageType;
 /** 数据包标签决定近战接入与出手侧；致伤分类冲突必须明确拒绝。 */
 public final class VanillaDamageTypeTags {
     public static final TagKey<DamageType> MELEE = tag("melee");
+    public static final TagKey<DamageType> LEG = tag("leg");
     public static final TagKey<DamageType> OFF_HAND = tag("off_hand");
     public static final TagKey<DamageType> TWO_HANDED = tag("two_handed");
+    public static final TagKey<DamageType> AIM_HEAD = tag("aim/head");
+    public static final TagKey<DamageType> AIM_TORSO = tag("aim/torso");
+    public static final TagKey<DamageType> AIM_LEGS = tag("aim/legs");
+    public static final TagKey<DamageType> AIM_ARMS = tag("aim/arms");
+    public static final TagKey<DamageType> AIM_OTHER = tag("aim/other");
+    private static final Map<TagKey<DamageType>, String> AIMS = Map.of(
+            AIM_HEAD, "head",
+            AIM_TORSO, "torso",
+            AIM_LEGS, "legs",
+            AIM_ARMS, "arms",
+            AIM_OTHER, "other");
     private static final Map<TagKey<DamageType>, DamageKind> KINDS = Map.of(
             tag("kind/blunt"), DamageKind.BLUNT,
             tag("kind/cutting"), DamageKind.CUTTING,
@@ -53,6 +65,11 @@ public final class VanillaDamageTypeTags {
         return kind(source.typeHolder());
     }
 
+    public static Optional<String> aim(DamageSource source) {
+        // 一次来源最多声明一个目标部位组，未声明时保留原有随机选点。
+        return aim(source.typeHolder());
+    }
+
     private static Optional<DamageKind> kind(Holder<DamageType> type) {
         // 同一来源最多有一种显式致伤类型，其余继续交给默认分类器。
         DamageKind selected = null;
@@ -68,8 +85,26 @@ public final class VanillaDamageTypeTags {
         return Optional.ofNullable(selected);
     }
 
+    private static Optional<String> aim(Holder<DamageType> type) {
+        // aim 标签只表达目标 anatomy 分组，不在 Fabric 层复制部位列表。
+        String selected = null;
+        for (var entry : AIMS.entrySet()) {
+            if (!type.is(entry.getKey())) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalStateException(VanillaDamageErrors.DAMAGE_AIM_TAGS + ": " + type.unwrapKey());
+            }
+            selected = entry.getValue();
+        }
+        return Optional.ofNullable(selected);
+    }
+
     public static void validate(Registry<DamageType> registry) {
         // 标签加载和重载完成后逐项校验，冲突会中止加载并报告来源 ID。
-        registry.listElements().forEach(VanillaDamageTypeTags::kind);
+        registry.listElements().forEach(type -> {
+            kind(type);
+            aim(type);
+        });
     }
 }

@@ -40,6 +40,13 @@ public class MuscleDamageTest {
     private static final double CURVE_PEAK = 1.5;
     private static final long STRIKE_DURATION_MILLIS = 500;
     private static final long MODIFIER_DURATION_MILLIS = 1000;
+    private static final double LEG_WORK_JOULES_PER_HP = 30;
+    private static final double LEG_SWING_SECONDS = 0.4;
+    private static final double LEG_DAMAGE = 2;
+    private static final double LEG_POWER_PER_TISSUE = 50;
+    private static final double ARM_WORK_JOULES_PER_HP = 20;
+    private static final double ARM_STRIKE_SECONDS = 0.5;
+    private static final double ARM_VANILLA_DAMAGE = 1;
 
     @Test
     public void coefficientUsesHealthFatigueModifiersAndBounds() {
@@ -74,10 +81,92 @@ public class MuscleDamageTest {
         assertEquals(1, rules.plan(asymmetric, LEFT, OFF_HAND).coefficient(), EPSILON);
         double expectedBoth = (LEFT_STRENGTH * HALF_COEFFICIENT + RIGHT_STRENGTH)
                 / (LEFT_STRENGTH + RIGHT_STRENGTH);
-        var both = rules.plan(asymmetric, RIGHT, TWO_HANDED);
+        var both = rules.plan(asymmetric, RIGHT, TWO_HANDED, 1);
         assertEquals(expectedBoth, both.coefficient(), EPSILON);
         assertEquals(List.of("left_muscle", "right_muscle"),
                 both.loads().getLoadsList().stream().map(ExertTissue::getTissueId).toList());
+    }
+
+    @Test
+    public void armWorkUsesVanillaDoseAndBaseBurstShares() {
+        MuscleRules rules = preferences().muscle();
+        var plan = rules.plan(body(), RIGHT, TWO_HANDED, 6);
+        assertEquals(2, plan.loads().getLoadsCount());
+        assertTrue(plan.loads().getLoadsList().stream().allMatch(load -> load.getForceNewtons() == 0));
+        assertTrue(plan.loads().getLoadsList().stream().allMatch(load ->
+                load.getPowerWatts() == 120 && load.getDurationSeconds() == ARM_STRIKE_SECONDS));
+        double work = plan.loads().getLoadsList().stream()
+                .mapToDouble(load -> load.getPowerWatts() * load.getDurationSeconds()).sum();
+        assertEquals(6 * ARM_WORK_JOULES_PER_HP, work, EPSILON);
+    }
+
+    @Test
+    public void negativeOrNonFiniteStrikeDoseIsRejected() {
+        MuscleRules rules = preferences().muscle();
+        assertThrows(IllegalArgumentException.class, () -> rules.plan(body(), RIGHT, MAIN_HAND, -1));
+        assertThrows(IllegalArgumentException.class, () -> rules.plan(body(), RIGHT, MAIN_HAND, Double.NaN));
+    }
+
+    @Test
+    public void coefficientFallsLinearlyBeforePowerExhaustion() {
+        MuscleRules rules = preferences().muscle();
+        var healthy = body();
+        assertEquals(0.6, rules.plan(modified(healthy, 0.6), RIGHT, MAIN_HAND).coefficient(), EPSILON);
+        assertEquals(0.7, rules.plan(modified(healthy, 0.7), RIGHT, MAIN_HAND).coefficient(), EPSILON);
+        var fixture = fixture(modified(healthy, 0.6), preferences());
+        assertEquals(0.6,
+                fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE), EPSILON);
+        assertEquals(1, fixture.store().find(new BodyId("test:attacker")).orElseThrow().revision());
+    }
+
+    @Test
+    public void coefficientIsMonotonicAcrossExhaustedThreshold() {
+        MuscleRules rules = preferences().muscle();
+        var strengthRatios = List.of(1.0, 0.6, 0.35, 0.30, 0.25, 0.20);
+        double previousStrengthRatio = strengthRatios.get(0);
+        double previousCoefficient = rules.plan(modified(body(), previousStrengthRatio), RIGHT, MAIN_HAND)
+                .coefficient();
+        for (double strengthRatio : strengthRatios.subList(1, strengthRatios.size())) {
+            double coefficient = rules.plan(modified(body(), strengthRatio), RIGHT, MAIN_HAND).coefficient();
+            double decrease = previousCoefficient - coefficient;
+            double strengthStep = previousStrengthRatio - strengthRatio;
+            assertTrue("出力比下降后系数不能上升", decrease >= -EPSILON);
+            assertTrue("跨过力竭阈值不应跳变", decrease <= strengthStep + EPSILON);
+            previousStrengthRatio = strengthRatio;
+            previousCoefficient = coefficient;
+        }
+    }
+
+    @Test
+    public void exhaustedCoefficientOnlyComesFromFrameworkCapacityFailures() {
+        double exhaustedCoefficient = preferences().muscle().coefficients().exhausted();
+        for (FailureCode code : List.of(FailureCode.TISSUE_LOAD_EXCEEDED, FailureCode.MODULE_UNAVAILABLE)) {
+            var bridge = rejectingBridge(body(), code);
+            assertEquals(exhaustedCoefficient,
+                    bridge.exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE), EPSILON);
+        }
+        var bridge = rejectingBridge(body(), FailureCode.REVISION_CONFLICT);
+        assertThrows(IllegalStateException.class,
+                () -> bridge.exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE));
+    }
+
+    @Test
+    public void legRulesSelectOppositeSideAndDistributeVanillaWork() {
+        MuscleRules rules = preferences().muscle();
+        BodyMessages.BodySnapshot body = legBody();
+        assertEquals(LEG_WORK_JOULES_PER_HP, rules.legWorkJoulesPerVanillaHp(), EPSILON);
+        assertEquals(LEG_SWING_SECONDS, rules.legSwingSeconds(), EPSILON);
+
+        var offHand = rules.planLeg(body, RIGHT, OFF_HAND, LEG_DAMAGE);
+        assertEquals(List.of("left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"),
+                offHand.loads().getLoadsList().stream().map(ExertTissue::getTissueId).toList());
+        assertTrue(offHand.loads().getLoadsList().stream()
+                .allMatch(load -> load.getPowerWatts() == LEG_POWER_PER_TISSUE
+                        && load.getDurationSeconds() == LEG_SWING_SECONDS));
+
+        var twoHanded = rules.planLeg(body, LEFT, TWO_HANDED, LEG_DAMAGE);
+        assertEquals(6, twoHanded.loads().getLoadsCount());
+        assertTrue(twoHanded.loads().getLoadsList().stream().allMatch(load -> load.getForceNewtons() == 0));
     }
 
     @Test
@@ -85,11 +174,11 @@ public class MuscleDamageTest {
         // 正常做功使所有选中肌肉增加疲劳，系数仍取提交前；新命中是独立命令。
         DamagePreferences settings = preferences();
         var fixture = fixture(body(), settings);
-        assertEquals(1, fixture.bridge().exertStrike("attacker", RIGHT, TWO_HANDED), EPSILON);
+        assertEquals(1, fixture.bridge().exertStrike("attacker", RIGHT, TWO_HANDED, ARM_VANILLA_DAMAGE), EPSILON);
         var committed = fixture.store().find(new BodyId("test:attacker")).orElseThrow();
         assertEquals(1, committed.revision());
         assertTrue(committed.tissueStates().stream().allMatch(tissue -> tissue.fatigue() > 0));
-        fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND);
+        fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE);
         assertEquals(2, fixture.store().find(committed.id()).orElseThrow().revision());
         assertEquals(2, fixture.exertions().get());
 
@@ -97,7 +186,8 @@ public class MuscleDamageTest {
         var fatigued = healthy.getTissueStates(1).toBuilder().setFatigue(MAX_HP).build();
         var exhausted = healthy.toBuilder().setTissueStates(1, fatigued).build();
         var rejected = fixture(exhausted, settings);
-        assertEquals(MINIMUM, rejected.bridge().exertStrike("attacker", RIGHT, TWO_HANDED), EPSILON);
+        assertEquals(MINIMUM,
+                rejected.bridge().exertStrike("attacker", RIGHT, TWO_HANDED, ARM_VANILLA_DAMAGE), EPSILON);
         assertEquals(exhausted, BodyProtobuf.toMessage(rejected.store()
                 .find(new BodyId("test:attacker")).orElseThrow()));
     }
@@ -107,13 +197,14 @@ public class MuscleDamageTest {
         // 服主禁用不读取身体；无身体实体仍由实际宿主明确返回 unbound。
         var disabled = DamagePreferences.parse("hp_per_vanilla_hp = 1\n" + muscleConfig("false"));
         var fixture = fixture(body(), disabled);
-        assertEquals(1, fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND), EPSILON);
+        assertEquals(1, fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE), EPSILON);
         assertEquals(0, fixture.exertions().get());
         assertEquals(0, fixture.store().find(new BodyId("test:attacker")).orElseThrow().revision());
-        assertEquals(1, fixture(body(), preferences()).bridge().exertStrike("unbound", RIGHT, MAIN_HAND), EPSILON);
+        assertEquals(1, fixture(body(), preferences()).bridge()
+                .exertStrike("unbound", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE), EPSILON);
         assertEquals(0, disabled.muscle().plan(body(), RIGHT, TWO_HANDED).loads().getLoadsCount());
         for (String invalid : List.of("strike_seconds = nan", "min_coefficient = 3", "tissue_tag = \"invalid\"",
-                "right_parts = [\"left_upper_arm\"]", "strike_power_ratio = 0")) {
+                "right_parts = [\"left_upper_arm\"]", "work_joules_per_vanilla_hp = 0")) {
             String key = invalid.substring(0, invalid.indexOf(" ="));
             String text = "hp_per_vanilla_hp = 1\n" + muscleConfig("true")
                     .replaceAll("(?m)^" + key + " = .*", invalid);
@@ -128,16 +219,18 @@ public class MuscleDamageTest {
         var peak = healthy.getModifiers(0);
         var trough = BodyMessages.CurvePoint.newBuilder()
                 .setOffsetMillis(STRIKE_DURATION_MILLIS)
-                .setValue(-1)
+                .setValue(-0.9)
                 .build();
         var decaying = peak.toBuilder()
                 .setStrengthPeak(CURVE_PEAK)
+                .setBurstPeak(2)
                 .setCurve(1, trough)
                 .build();
         var body = healthy.toBuilder().setModifiers(0, decaying).build();
         DamagePreferences settings = preferences();
         var fixture = fixture(body, settings);
-        assertEquals(MINIMUM, fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND), EPSILON);
+        assertEquals(MINIMUM,
+                fixture.bridge().exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE), EPSILON);
         assertEquals(0, fixture.store().find(new BodyId("test:attacker")).orElseThrow().revision());
         BodyHealthHost broken = payload -> {
             var request = HealthHostProtobuf.decodeRequest(payload);
@@ -151,7 +244,25 @@ public class MuscleDamageTest {
             return HealthHostProtobuf.encodeResponse(response.setFailure(failure).build());
         };
         var bridge = new VanillaDamageBridge(List.of(broken), settings, List.of(integration()));
-        assertThrows(IllegalStateException.class, () -> bridge.exertStrike("attacker", RIGHT, MAIN_HAND));
+        assertThrows(IllegalStateException.class,
+                () -> bridge.exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE));
+    }
+
+    private static VanillaDamageBridge rejectingBridge(BodyMessages.BodySnapshot body, FailureCode code) {
+        BodyHealthHost host = payload -> {
+            var request = HealthHostProtobuf.decodeRequest(payload);
+            var response = HealthHostResponse.newBuilder()
+                    .setProtocolVersion(1)
+                    .setRequestId(request.getRequestId());
+            if (request.hasInspect()) {
+                return HealthHostProtobuf.encodeResponse(response.setBody(body).build());
+            }
+            var failure = RequestFailure.newBuilder()
+                    .setCode(code)
+                    .build();
+            return HealthHostProtobuf.encodeResponse(response.setFailure(failure).build());
+        };
+        return new VanillaDamageBridge(List.of(host), preferences(), List.of(integration()));
     }
 
     private static Fixture fixture(BodyMessages.BodySnapshot body, DamagePreferences preferences) {
@@ -222,9 +333,13 @@ public class MuscleDamageTest {
                 min_coefficient = 0.25
                 max_coefficient = 2.0
                 exhausted_coefficient = 0.25
-                strike_force_ratio = 0.6
-                strike_power_ratio = 0.6
+                work_joules_per_vanilla_hp = 20.0
                 strike_seconds = 0.5
+                leg_tissue_tag = "human:leg_muscle"
+                left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]
+                right_leg = ["right_gluteus_maximus", "right_rectus_femoris", "right_gastrocnemius"]
+                leg_work_joules_per_vanilla_hp = 30.0
+                leg_swing_seconds = 0.4
                 """.formatted(enabled);
     }
 
@@ -265,10 +380,40 @@ public class MuscleDamageTest {
         return BodyProtobuf.toMessage(body);
     }
 
+    private static BodyMessages.BodySnapshot legBody() {
+        var pelvis = new Anatomy.PartId("pelvis");
+        var leftThigh = new Anatomy.PartId("left_thigh");
+        var leftLowerLeg = new Anatomy.PartId("left_lower_leg");
+        var rightThigh = new Anatomy.PartId("right_thigh");
+        var rightLowerLeg = new Anatomy.PartId("right_lower_leg");
+        var parts = List.of(pelvis, leftThigh, leftLowerLeg, rightThigh, rightLowerLeg);
+        var definitions = List.of(
+                muscle("left_gluteus_maximus", pelvis, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("left_rectus_femoris", leftThigh, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("left_gastrocnemius", leftLowerLeg, LEFT_STRENGTH, "human:leg_muscle"),
+                muscle("right_gluteus_maximus", pelvis, RIGHT_STRENGTH, "human:leg_muscle"),
+                muscle("right_rectus_femoris", rightThigh, RIGHT_STRENGTH, "human:leg_muscle"),
+                muscle("right_gastrocnemius", rightLowerLeg, RIGHT_STRENGTH, "human:leg_muscle"));
+        var structure = new BodyStructure(parts.stream()
+                .map(part -> new Anatomy.PartDefinition(part, part.value(), MAX_HP)).toList(), definitions,
+                List.of(), List.of(), List.of());
+        var body = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION, new BodyId("test:legs"),
+                new BodyTemplate.Reference(new DefinitionId("test:legs"), 1), structure, Realm.WANDERING_QI,
+                parts.stream().map(part -> new AnatomyState.Part(part, MAX_HP)).toList(),
+                definitions.stream().map(tissue -> new AnatomyState.Tissue(tissue.id(), MAX_HP, 0)).toList(),
+                List.of(), List.of(), List.of(), new VitalityState(0, ENDURANCE, 0, false /* dead */),
+                new TimeCursor(new DefinitionId("test:world"), "epoch", 0), 0);
+        return BodyProtobuf.toMessage(body);
+    }
+
     private static Anatomy.TissueDefinition muscle(String id, Anatomy.PartId part, double strength) {
+        return muscle(id, part, strength, "human:arm_muscle");
+    }
+
+    private static Anatomy.TissueDefinition muscle(String id, Anatomy.PartId part, double strength, String tag) {
         // 肌肉标签是唯一选择依据，不向规则引入 Human 实现依赖。
         return new Anatomy.TissueDefinition(new Anatomy.TissueId(id), "肌肉", new DefinitionId("test:muscle"),
                 part, MAX_HP, MAX_HP, List.of(), new Anatomy.TissueCapacity(strength, POWER, ENDURANCE), 0,
-                List.of(new DefinitionId("human:arm_muscle")));
+                List.of(new DefinitionId(tag)));
     }
 }
