@@ -133,12 +133,9 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (!Double.isFinite(scaledDamage) || scaledDamage > Float.MAX_VALUE) {
             throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
         }
-        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>()).push(new DamageFrame(rawDamage));
+        applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>())
+                .push(new DamageFrame(rawDamage, coefficient));
         return (float) scaledDamage;
-    }
-
-    static double strikeCoefficient(LivingEntity attacker, DamageSource source) {
-        return strikeCoefficient(attacker, source, 0);
     }
 
     static double strikeCoefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
@@ -151,7 +148,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (source.is(VanillaDamageTypeTags.LEG)) {
             return bridge.exertLegStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
         }
-        return bridge.exertStrike(attacker.getStringUUID(), mainArm, grip);
+        return bridge.exertStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
     }
 
     public static double estimateStrikeCoefficient(BodyMessages.BodySnapshot attacker, LivingEntity entity,
@@ -197,7 +194,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             }
             VanillaDamageBridge.PreparedHit hit = prepared.get();
             DamageFrame frame = frames.peek();
-            var effect = attackEffect(entity, source, attack, frame.rawDamage);
+            var effect = attackEffect(entity, source, attack, frame.rawDamage, frame.muscleMultiplier);
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
             float remainingDamage = localArmorDamage(entity, source, hit, dose.amount());
             frame.hit = hit;
@@ -240,18 +237,21 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     private static VanillaDamageBridge.AttackEffectResolution attackEffect(
-            LivingEntity target, DamageSource source, AttackSource attack, float rawDamage) {
-        // 附效读取乘系数前的原版剂量，故障保持原版伤害路径。
+            LivingEntity target, DamageSource source, AttackSource attack, float vanillaDamage,
+            double muscleMultiplier) {
+        // 附效同时读取乘系数前后的原版剂量，故障保持原版伤害路径。
         if (!source.is(VanillaDamageTypeTags.MELEE) || !(attack.attacker() instanceof LivingEntity attacker)) {
             return null;
         }
         try {
+            double scaledDamage = vanillaDamage * muscleMultiplier;
             var effect = bridge.prepareAttackEffect(target.getStringUUID(), attacker.getStringUUID(),
-                    attack.id(), attack.kind(), rawDamage, true /* melee */, target.level().getGameTime()).orElse(null);
+                    attack.id(), attack.kind(), scaledDamage, vanillaDamage, muscleMultiplier,
+                    true /* melee */, target.level().getGameTime()).orElse(null);
             if (effect != null && effect.truncated()) {
                 LOGGER.warn("{} target={} source={} rawHp={} extraHp={} maxRatio={}",
                         VanillaDamageErrors.ATTACK_EFFECT_PLAN, target.getStringUUID(), attack.id(),
-                        rawDamage, effect.extraDamageHp(), "configured");
+                        vanillaDamage, effect.extraDamageHp(), "configured");
             }
             return effect;
         } catch (RuntimeException failure) {
@@ -423,14 +423,16 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static final class DamageFrame {
         private final float rawDamage;
+        private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
         private DamageKind kind = DamageKind.CUSTOM;
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;
 
-        private DamageFrame(float rawDamage) {
-            // 附效上限仍以原版剂量为准，额外伤害不重复乘肌肉系数。
+        private DamageFrame(float rawDamage, double muscleMultiplier) {
+            // 附效上限仍以乘系数前的原版剂量为准，额外伤害不重复乘肌肉系数。
             this.rawDamage = rawDamage;
+            this.muscleMultiplier = muscleMultiplier;
         }
     }
 

@@ -34,13 +34,13 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 每次事件在护甲阶段先查询所有宿主，确保恰好一个认领该身份。只有 `unbound = true` 表示可以继续寻找；明确失败、格式错误或多个认领立即拒绝，不尝试另一套账本。`prepare` 固定宿主、部位与 revision，供局部护甲结算使用；`PreparedHit.commit` 在原版抗性、附魔与吸收之后单次提交完整剂量。准备本身不扣身体 HP，完全吸收时直接丢弃。提交时使用同一宿主、固定请求 ID 和读到的身体 revision，框架继续校验、去重及原子提交。失败不重新随机选点，也不擅自刷新版本重试。
 
-近战在进入护甲阶段前，另对攻击者使用同样的唯一宿主查询规则。`exertStrike` 从做功前快照计算系数，再向同一宿主提交 `exertion`，内含普通 `ExertTissues` 命令；保留身体 ID、预期 revision 与请求 ID。做功成功只要求返回同一身体，能力不足按力竭系数命中，其他错误抛出。完整规则、标签与配置见[肌肉出力](Damage-Rules.md#肌肉出力)，交付证据见[实现验证](Muscle-Validation.md)。
+近战在进入护甲阶段前，另对攻击者使用同样的唯一宿主查询规则。`exertStrike` 从做功前快照计算系数，再按原版剂量和 `[muscle]` 的焦耳、时长配置构造普通 `ExertTissues`，向同一宿主提交 `exertion`；保留身体 ID、预期 revision 与请求 ID。做功成功只要求返回同一身体，能力不足按力竭系数命中，其他错误抛出。完整规则、标签与配置见[肌肉出力](Damage-Rules.md#肌肉出力)，交付证据见[实现验证](Muscle-Validation.md)。
 
 ## 攻击方附效入口
 
-伤害附属提供 [AttackEffectProvider](../../server/src/main/java/dev/kizuna/meridian/vanilla/AttackEffectProvider.java)，并在自己的 `fabric.mod.json` 中注册 `meridian_attack_effect`。Damage 在服务端主线程只对已绑定身体的近战攻击者查询快照，然后按 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 编解码上下文和方案。提供方不依赖 Damage 的内部 Java 类之外的身体实现，也不能上传伤害来源、目标部位或原版剂量。
+伤害附属提供 [AttackEffectProvider](../../server/src/main/java/dev/kizuna/meridian/vanilla/AttackEffectProvider.java)，并在自己的 `fabric.mod.json` 中注册 `meridian_attack_effect`。Damage 在服务端主线程只对已绑定身体的近战攻击者查询快照，然后按 [attack_effect.proto](../../server/src/main/proto/kizuna/meridian/vanilla/v1/attack_effect.proto) 编解码上下文和方案。上下文字段 7 `raw_damage_hp` 是乘肌肉系数后的原版剂量，字段 10 `vanilla_damage_hp` 是乘系数前的原版剂量，字段 11 `muscle_multiplier` 是本次系数。提供方不依赖 Damage 的内部 Java 类之外的身体实现，也不能上传伤害来源、目标部位或原版剂量。
 
-`handled` 方案最多一个；附加剂量与原版剂量共用一次局部护甲和身体事务，状态效果在 `hurt` 返回时施加。远程来源、未绑定攻击者、提供方异常、非法方案和重复认领均跳过附效并保留原版伤害。`effect_id` 在同一目标上去重，`max_extra_ratio` 默认 4.0，配置可关闭整个入口。
+`handled` 方案最多一个；附加剂量不再乘肌肉系数，和字段 7 的原版剂量共用一次局部护甲和身体事务，状态效果在 `hurt` 返回时施加。附加剂量上限按字段 10 的原版剂量乘 `max_extra_ratio` 计算，默认 4.0。远程来源、未绑定攻击者、提供方异常、非法方案和重复认领均跳过附效并保留原版伤害。`effect_id` 在同一目标上去重，配置可关闭整个入口。
 
 提供方示例（只用于仓库 GameTest）在 `fabric/src/gametest/resources/fabric.mod.json` 注册；功法库等其他仓库应依赖本仓库 server JAR 并自行实现入口，本仓库不会修改它们。
 

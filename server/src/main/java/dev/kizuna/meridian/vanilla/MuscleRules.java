@@ -29,7 +29,7 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
     public enum Group { ARMS, LEGS }
     public record Parts(Set<String> left, Set<String> right) { }
     public record Coefficients(double minimum, double maximum, double exhausted) { }
-    public record Strike(double forceRatio, double powerRatio, double seconds) { }
+    public record Strike(double workJoulesPerVanillaHp, double seconds) { }
     public record LegSettings(String tissueTag, Parts parts, LegWork work) { }
     public record LegWork(double joulesPerVanillaHp, double seconds) { }
     public record Plan(double coefficient, ExertTissues loads) { }
@@ -54,8 +54,9 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         if (minimum > maximum || exhausted < minimum || exhausted > maximum) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.MUSCLE);
         }
-        var strike = new Strike(positive(table, "strike_force_ratio"), positive(table, "strike_power_ratio"),
-                positive(table, "strike_seconds"));
+        double workJoulesPerVanillaHp = positive(table, "work_joules_per_vanilla_hp");
+        double strikeSeconds = positive(table, "strike_seconds");
+        var strike = new Strike(workJoulesPerVanillaHp, strikeSeconds);
         String legTag = optionalTag(table, "leg_tissue_tag", DEFAULT_LEG_TISSUE_TAG);
         Set<String> leftLeg = partIds(table, "left_leg", DEFAULT_LEFT_LEG);
         Set<String> rightLeg = partIds(table, "right_leg", DEFAULT_RIGHT_LEG);
@@ -147,6 +148,10 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         return plan(snapshot, mainArm, grip, Group.ARMS, 0);
     }
 
+    public Plan plan(BodySnapshot snapshot, Arm mainArm, Grip grip, double vanillaDamage) {
+        return plan(snapshot, mainArm, grip, Group.ARMS, vanillaDamage);
+    }
+
     public Plan planLeg(BodySnapshot snapshot, Arm mainArm, Grip grip, double vanillaDamage) {
         return plan(snapshot, mainArm, grip, Group.LEGS, vanillaDamage);
     }
@@ -194,11 +199,13 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         }
         double ratio = availableStrength / baseStrength;
         double coefficient = Math.max(coefficients.minimum(), Math.min(coefficients.maximum(), ratio));
-        return new Plan(coefficient, loads(muscles, group, vanillaDamage));
+        ExertTissues loads = loads(muscles, group, vanillaDamage);
+        return new Plan(coefficient, loads);
     }
 
     private static void validateDamage(Group group, double vanillaDamage) {
-        if (group == Group.LEGS && (!Double.isFinite(vanillaDamage) || vanillaDamage <= 0)) {
+        if (!Double.isFinite(vanillaDamage) || vanillaDamage < 0
+                || (group == Group.LEGS && vanillaDamage <= 0)) {
             throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
         }
     }
@@ -207,7 +214,7 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
         if (group == Group.LEGS) {
             return legLoads(muscles, vanillaDamage);
         }
-        return armLoads(muscles);
+        return armLoads(muscles, vanillaDamage);
     }
 
     private ExertTissues legLoads(List<Anatomy.TissueDefinition> muscles, double vanillaDamage) {
@@ -230,21 +237,38 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
                 .build();
     }
 
-    private ExertTissues armLoads(List<Anatomy.TissueDefinition> muscles) {
+    private ExertTissues armLoads(List<Anatomy.TissueDefinition> muscles, double vanillaDamage) {
+        if (vanillaDamage == 0) {
+            return ExertTissues.getDefaultInstance();
+        }
+        double totalWork = vanillaDamage * strike.workJoulesPerVanillaHp();
+        double totalBaseBurstWatts = muscles.stream()
+                .mapToDouble(muscle -> muscle.capacity().burstWatts())
+                .sum();
+        if (!Double.isFinite(totalWork) || totalWork <= 0
+                || !Double.isFinite(totalBaseBurstWatts) || totalBaseBurstWatts <= 0) {
+            throw new IllegalStateException(VanillaDamageErrors.MUSCLE_CAPACITY);
+        }
+        double strikeSeconds = strike.seconds();
+        double totalPower = totalWork / strikeSeconds;
+        if (!Double.isFinite(totalPower) || totalPower <= 0) {
+            throw new IllegalStateException(VanillaDamageErrors.MUSCLE_CAPACITY);
+        }
         var loads = ExertTissues.newBuilder();
         for (var muscle : muscles) {
-            loads.addLoads(armLoad(muscle));
+            double powerShare = muscle.capacity().burstWatts() / totalBaseBurstWatts;
+            double musclePower = totalPower * powerShare;
+            loads.addLoads(armLoad(muscle, musclePower, strikeSeconds));
         }
         return loads.build();
     }
 
-    private ExertTissue armLoad(Anatomy.TissueDefinition muscle) {
-        var capacity = muscle.capacity();
+    private ExertTissue armLoad(Anatomy.TissueDefinition muscle, double powerWatts, double strikeSeconds) {
         return ExertTissue.newBuilder()
                 .setTissueId(muscle.id().value())
-                .setForceNewtons(capacity.strengthNewtons() * strike.forceRatio())
-                .setPowerWatts(capacity.burstWatts() * strike.powerRatio())
-                .setDurationSeconds(strike.seconds())
+                .setForceNewtons(0)
+                .setPowerWatts(powerWatts)
+                .setDurationSeconds(strikeSeconds)
                 .build();
     }
 

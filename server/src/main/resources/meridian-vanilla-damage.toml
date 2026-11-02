@@ -201,8 +201,8 @@ right_parts = ["right_upper_arm", "right_forearm", "right_hand"]
 min_coefficient = 0.25
 max_coefficient = 2.0
 exhausted_coefficient = 0.25
-strike_force_ratio = 0.6
-strike_power_ratio = 0.6
+# 每点原版伤害对应的肌肉做功焦耳数，按基础爆发功率分摊。
+work_joules_per_vanilla_hp = 20.0
 strike_seconds = 0.5
 leg_tissue_tag = "human:leg_muscle"
 left_leg = ["left_gluteus_maximus", "left_rectus_femoris", "left_gastrocnemius"]

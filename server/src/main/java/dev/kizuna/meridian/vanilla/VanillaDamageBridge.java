@@ -64,9 +64,10 @@ public final class VanillaDamageBridge {
         return inspect(subjectId).map(Binding::body);
     }
 
-    public double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip) {
-        // 手臂近战沿用固定做功参数；腿部命中通过专用入口按原版伤害换算做功。
-        return exertStrike(subjectId, mainArm, grip, MuscleRules.Group.ARMS, 0);
+    public double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip,
+                              double vanillaDamage) {
+        // 手臂每次做功按调用方提供的原版剂量换算焦耳。
+        return exertStrike(subjectId, mainArm, grip, MuscleRules.Group.ARMS, vanillaDamage);
     }
 
     public double exertLegStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip,
@@ -92,7 +93,7 @@ public final class VanillaDamageBridge {
         if (group == MuscleRules.Group.LEGS) {
             plan = rules.planLeg(body, mainArm, grip, vanillaDamage);
         } else {
-            plan = rules.plan(body, mainArm, grip);
+            plan = rules.plan(body, mainArm, grip, vanillaDamage);
         }
         if (plan.loads().getLoadsCount() == 0) {
             return plan.coefficient();
@@ -149,7 +150,26 @@ public final class VanillaDamageBridge {
             return Optional.empty();
         }
         return inspectBody(attackerSubjectId).flatMap(attackerBody -> prepareAttackEffect(
-                targetSubjectId, attackerSubjectId, attackerBody, sourceId, kind, rawDamageHp, melee, serverTick));
+                targetSubjectId, attackerSubjectId, attackerBody, sourceId, kind, rawDamageHp, rawDamageHp,
+                1, melee, serverTick));
+    }
+
+    public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
+                                                                String attackerSubjectId,
+                                                                String sourceId,
+                                                                DamageKind kind,
+                                                                double rawDamageHp,
+                                                                double vanillaDamageHp,
+                                                                double muscleMultiplier,
+                                                                boolean melee,
+                                                                long serverTick) {
+        // 新调用方同时提供缩放后的原版剂量、缩放前剂量和肌肉倍率，旧入口保持倍率为一。
+        if (!preferences.attackEffectsEnabled() || !melee || attackEffectProviders.isEmpty()) {
+            return Optional.empty();
+        }
+        return inspectBody(attackerSubjectId).flatMap(attackerBody -> prepareAttackEffect(
+                targetSubjectId, attackerSubjectId, attackerBody, sourceId, kind, rawDamageHp, vanillaDamageHp,
+                muscleMultiplier, melee, serverTick));
     }
 
     public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
@@ -160,14 +180,37 @@ public final class VanillaDamageBridge {
                                                                 double rawDamageHp,
                                                                 boolean melee,
                                                                 long serverTick) {
-        // 上下文固定攻击者快照和原版剂量；提供方不能改写目标身体或致伤类型。
+        return prepareAttackEffect(targetSubjectId, attackerSubjectId, attackerBody, sourceId, kind, rawDamageHp,
+                rawDamageHp, 1, melee, serverTick);
+    }
+
+    public Optional<AttackEffectResolution> prepareAttackEffect(String targetSubjectId,
+                                                                String attackerSubjectId,
+                                                                BodySnapshot attackerBody,
+                                                                String sourceId,
+                                                                DamageKind kind,
+                                                                double rawDamageHp,
+                                                                double vanillaDamageHp,
+                                                                double muscleMultiplier,
+                                                                boolean melee,
+                                                                long serverTick) {
+        // 上下文固定攻击者快照和两种原版剂量；提供方不能改写目标身体或致伤类型。
         if (!preferences.attackEffectsEnabled() || !melee || attackEffectProviders.isEmpty()) {
             return Optional.empty();
         }
-        var context = AttackEffectMessages.AttackEffectContext.newBuilder()
-                .setProtocolVersion(1).setAttackerSubjectId(attackerSubjectId).setAttackerBody(attackerBody)
-                .setTargetSubjectId(targetSubjectId).setSourceId(sourceId).setKind(kind)
-                .setRawDamageHp(rawDamageHp).setMelee(melee).setServerTick(serverTick).build();
+        var contextBuilder = AttackEffectMessages.AttackEffectContext.newBuilder();
+        contextBuilder.setProtocolVersion(1);
+        contextBuilder.setAttackerSubjectId(attackerSubjectId);
+        contextBuilder.setAttackerBody(attackerBody);
+        contextBuilder.setTargetSubjectId(targetSubjectId);
+        contextBuilder.setSourceId(sourceId);
+        contextBuilder.setKind(kind);
+        contextBuilder.setRawDamageHp(rawDamageHp);
+        contextBuilder.setVanillaDamageHp(vanillaDamageHp);
+        contextBuilder.setMuscleMultiplier(muscleMultiplier);
+        contextBuilder.setMelee(melee);
+        contextBuilder.setServerTick(serverTick);
+        var context = contextBuilder.build();
         AttackEffectMessages.AttackEffectPlan selected = null;
         for (AttackEffectProvider provider : attackEffectProviders) {
             final AttackEffectMessages.AttackEffectPlan candidate;
@@ -194,7 +237,7 @@ public final class VanillaDamageBridge {
             // 同一施放 ID 对同一目标只认领一次；提供方仍被询问以保持窗口状态推进。
             return Optional.empty();
         }
-        double maximumExtra = rawDamageHp * preferences.maxExtraRatio();
+        double maximumExtra = vanillaDamageHp * preferences.maxExtraRatio();
         if (!Double.isFinite(maximumExtra)) {
             maximumExtra = Double.MAX_VALUE;
         }

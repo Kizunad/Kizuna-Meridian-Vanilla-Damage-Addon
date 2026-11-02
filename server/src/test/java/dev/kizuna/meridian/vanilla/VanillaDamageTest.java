@@ -142,8 +142,7 @@ public class VanillaDamageTest {
                 min_coefficient = 0.25
                 max_coefficient = 2.0
                 exhausted_coefficient = 0.25
-                strike_force_ratio = 0.6
-                strike_power_ratio = 0.6
+                work_joules_per_vanilla_hp = 20.0
                 strike_seconds = 0.5
                 """;
         assertThrows(IllegalArgumentException.class, () -> DamagePreferences.parse(missingLeftParts));
@@ -156,6 +155,9 @@ public class VanillaDamageTest {
         AttackEffectProvider provider = payload -> {
             providerCalls.incrementAndGet();
             var context = AttackEffectProtobuf.decodeContext(payload);
+            assertEquals(3, context.getRawDamageHp(), 0);
+            assertEquals(2, context.getVanillaDamageHp(), 0);
+            assertEquals(1.5, context.getMuscleMultiplier(), 0);
             return AttackEffectProtobuf.encodePlan(AttackEffectMessages.AttackEffectPlan.newBuilder()
                     .setHandled(true).setExtraDamageHp(2).setEffectId("test:cast")
                     .addStatusEffects(AttackEffectMessages.StatusEffect.newBuilder()
@@ -165,12 +167,12 @@ public class VanillaDamageTest {
                 List.of(provider));
 
         var resolution = bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
-                DamageKind.BLUNT, 2, true, 10).orElseThrow();
+                DamageKind.BLUNT, 3, 2, 1.5, true, 10).orElseThrow();
         assertEquals(2, resolution.extraDamageHp(), 0);
         assertEquals(1, resolution.statusEffects().size());
         bridge.markAttackEffectApplied("target", resolution.effectId());
         assertTrue(bridge.prepareAttackEffect("target", "subject", "minecraft:mob_attack",
-                DamageKind.BLUNT, 2, true, 10).isEmpty());
+                DamageKind.BLUNT, 3, 2, 1.5, true, 10).isEmpty());
         assertEquals(2, providerCalls.get());
 
         // 远程命中和未绑定攻击者均不询问提供方。
@@ -193,7 +195,7 @@ public class VanillaDamageTest {
         var duplicateClaim = new VanillaDamageBridge(List.of(host(store, new AtomicInteger())), preferences(), List.of(effects()),
                 List.of(provider, second));
         assertThrows(IllegalStateException.class, () -> duplicateClaim.prepareAttackEffect("target", "subject",
-                "minecraft:mob_attack", DamageKind.BLUNT, 2, true, 10));
+                "minecraft:mob_attack", DamageKind.BLUNT, 3, 2, 1.5, true, 10));
         assertThrows(IllegalArgumentException.class, () -> AttackEffectProtobuf.encodePlan(
                 AttackEffectMessages.AttackEffectPlan.newBuilder().setHandled(true).setExtraDamageHp(-1).build()));
     }

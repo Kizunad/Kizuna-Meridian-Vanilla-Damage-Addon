@@ -20,10 +20,14 @@ import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import dev.kizuna.meridian.technique.fabric.testing.TestPlayers;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.core.Holder;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
@@ -65,7 +69,7 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final AtomicInteger ATTACK_EFFECT_CALLS = new AtomicInteger();
     private static final double MUSCLE_HP = 100;
     private static final double MUSCLE_STRENGTH = 300;
-    private static final double MUSCLE_POWER = 100;
+    private static final double MUSCLE_POWER = 1000;
     private static final double MUSCLE_ENDURANCE = 1000;
     private static final double BOOST = 1.3;
     private static final double COLLAPSE = 0.85;
@@ -85,7 +89,8 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final double SWEEPING_MULTIPLIER = 0.75;
     private static final double ATTACK_DISTANCE = 1.5;
     private static final int SHIELD_READY_TICKS = 6;
-    private static final double STRIKE_FATIGUE = 3;
+    private static final double ARM_WORK_JOULES_PER_HP = 20;
+    private static final double ARM_STRIKE_SECONDS = 0.5;
     private static final BodyCommandHandler<String> COMMANDS = new BodyCommandHandler<>(
             (caller, command) -> Optional.of(caller), (caller, command, body) -> true,
             (caller, body) -> TimeAdvancePlan.newBuilder()
@@ -500,7 +505,8 @@ public final class DamageGameTest implements BodyHealthHost {
         assertClose(context, firstHealth - firstSweep.getHealth(), sweepDamage, "第一横扫目标系数错误");
         assertClose(context, secondHealth - secondSweep.getHealth(), sweepDamage, "第二横扫目标系数错误");
         context.assertTrue(body(attacker).revision() == 1, "一次横扫重复提交做功");
-        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "横扫疲劳非单笔");
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(),
+                fatigueForVanillaDamage(vanillaDamage), "横扫疲劳非单笔 vanilla=" + vanillaDamage);
         primary.invulnerableTime = 0;
         attacker.attack(primary);
         context.assertTrue(body(attacker).revision() == 2, "出手上下文没有释放");
@@ -525,7 +531,9 @@ public final class DamageGameTest implements BodyHealthHost {
         attacker.attack(defender);
         assertClose(context, defender.getHealth(), health, "盾没有实际挡住伤害");
         context.assertTrue(body(attacker).revision() == 1, "盾挡未按出手记一笔做功");
-        assertClose(context, body(attacker).tissueStates().get(1).fatigue(), STRIKE_FATIGUE, "盾挡疲劳错误");
+        double vanillaDamage = attacker.getAttributeValue(Attributes.ATTACK_DAMAGE);
+        assertClose(context, body(attacker).tissueStates().get(1).fatigue(),
+                fatigueForVanillaDamage(vanillaDamage), "盾挡疲劳错误");
         context.succeed();
     }
 
@@ -546,6 +554,34 @@ public final class DamageGameTest implements BodyHealthHost {
         context.assertTrue(body(attacker).revision() == 2, "攻击和动画包重复做功");
         attacker.connection.handleAnimate(mainSwing);
         context.assertTrue(body(attacker).revision() == 3, "下一次挥空被旧实体攻击吞掉");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void miningAndItemUseSwingsDoNotCountAsEmptyAttacks(GameTestHelper context) {
+        // 挖掘期间的连续动画和物品使用动画都不能伪造一次近战挥空。
+        var attacker = TestPlayers.detached(context.getLevel(), "damage_swing_actions");
+        bindMuscles(attacker, BOOST);
+        var startMining = new ServerboundPlayerActionPacket(
+                ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, BlockPos.ZERO, Direction.UP);
+        attacker.connection.handlePlayerAction(startMining);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 0, "挖掘动画不应记近战做功");
+        var abortMining = new ServerboundPlayerActionPacket(
+                ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, BlockPos.ZERO, Direction.UP);
+        attacker.connection.handlePlayerAction(abortMining);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 1, "结束挖掘后的真正挥空应记做功");
+        var useItem = new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 0, 0, 0);
+        attacker.connection.handleUseItem(useItem);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 1, "物品使用动画不应记近战做功");
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 2, "交互后的下一次挥空应恢复计费");
+        var offHandUse = new ServerboundUseItemPacket(InteractionHand.OFF_HAND, 0, 0, 0);
+        attacker.connection.handleUseItem(offHandUse);
+        attacker.connection.handleAnimate(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        context.assertTrue(body(attacker).revision() == 3, "副手交互不应抑制主手挥空");
         context.succeed();
     }
 
@@ -879,5 +915,12 @@ public final class DamageGameTest implements BodyHealthHost {
         // 原版使用 float，身体使用 double，只容许对应的微小表示误差。
         context.assertTrue(Math.abs(actual - expected) < EPSILON,
                 message + ": actual=" + actual + ", expected=" + expected);
+    }
+
+    private static double fatigueForVanillaDamage(double vanillaDamage) {
+        // 单臂做功按原版剂量换算；功率与时长相乘后得到每次命中的焦耳数。
+        double powerWatts = vanillaDamage * ARM_WORK_JOULES_PER_HP / ARM_STRIKE_SECONDS;
+        double workJoules = powerWatts * ARM_STRIKE_SECONDS;
+        return workJoules / MUSCLE_ENDURANCE * MUSCLE_HP;
     }
 }

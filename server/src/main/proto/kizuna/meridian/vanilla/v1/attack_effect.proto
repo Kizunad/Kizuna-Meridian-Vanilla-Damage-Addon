@@ -18,6 +18,8 @@ message AttackEffectContext {
   double raw_damage_hp = 7;
   bool melee = 8;
   int64 server_tick = 9;
+  double vanilla_damage_hp = 10;
+  double muscle_multiplier = 11;
 }
 
 message AttackEffectPlan {
