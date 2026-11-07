@@ -90,6 +90,10 @@ public final class VanillaStrikeContext implements AutoCloseable {
     }
 
     private static double fallbackDamage(LivingEntity attacker) {
+        // 商人等没有原版攻击属性的生物也能施放近战功法；挥空沿用默认正剂量结算。
+        if (!attacker.getAttributes().hasAttribute(Attributes.ATTACK_DAMAGE)) {
+            return DEFAULT_EMPTY_SWING_DAMAGE;
+        }
         double attackDamage = attacker.getAttributeValue(Attributes.ATTACK_DAMAGE);
         if (Double.isFinite(attackDamage) && attackDamage > 0) {
             return attackDamage;

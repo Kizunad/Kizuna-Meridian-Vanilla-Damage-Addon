@@ -47,6 +47,122 @@ public class MuscleDamageTest {
     private static final double ARM_WORK_JOULES_PER_HP = 20;
     private static final double ARM_STRIKE_SECONDS = 0.5;
     private static final double ARM_VANILLA_DAMAGE = 1;
+    private static final long QUERY_START_MILLIS = 500;
+    private static final long QUERY_PEAK_OFFSET_MILLIS = 400;
+    private static final long QUERY_TROUGH_OFFSET_MILLIS = 800;
+    private static final long QUERY_RISE_MILLIS = 700;
+    private static final long QUERY_PEAK_MILLIS = 900;
+    private static final long QUERY_TROUGH_MILLIS = 1300;
+    private static final long QUERY_END_MILLIS = 1500;
+
+    @Test
+    public void armQueryUsesRequestedSideAndNeverExerts() {
+        // 左右臂按解剖侧查询，重复读取不得改变身体、疲劳或版本。
+        BodyMessages.BodySnapshot healthy = body();
+        var injuredPart = healthy.getPartStates(0).toBuilder().setHp(HALF_HEALTH).build();
+        var asymmetric = modified(healthy.toBuilder().setPartStates(0, injuredPart).build(), BOOST);
+        var fixture = fixture(asymmetric, preferences());
+        var bridge = fixture.bridge();
+        for (int query = 0; query < 2; query++) {
+            assertEquals(HALF_COEFFICIENT, bridge.armCoefficient("attacker", LEFT), EPSILON);
+            assertEquals(BOOST, bridge.armCoefficient("attacker", RIGHT), EPSILON);
+        }
+        assertEquals(0, fixture.exertions().get());
+        assertEquals(asymmetric, BodyProtobuf.toMessage(fixture.store()
+                .find(new BodyId("test:attacker")).orElseThrow()));
+    }
+
+    @Test
+    public void armQueryReadsFreshFatigueAndCurrentModifiers() {
+        // 两次撒放间的做功会降低下次系数；查询本身不再追加一笔做功。
+        var healthy = body();
+        DamagePreferences settings = preferences();
+        var fixture = fixture(healthy, settings);
+        var bridge = fixture.bridge();
+        var store = fixture.store();
+        assertEquals(1, bridge.armCoefficient("attacker", RIGHT), EPSILON);
+        bridge.exertStrike("attacker", RIGHT, MAIN_HAND, ARM_VANILLA_DAMAGE);
+        var afterStrike = store.find(new BodyId("test:attacker")).orElseThrow();
+        var snapshot = BodyProtobuf.toMessage(afterStrike);
+        double expected = settings.muscle().plan(snapshot, RIGHT, MAIN_HAND).coefficient();
+        assertTrue(expected < 1);
+        assertEquals(expected, bridge.armCoefficient("attacker", RIGHT), EPSILON);
+        assertEquals(afterStrike, store.find(afterStrike.id()).orElseThrow());
+        assertEquals(1, fixture.exertions().get());
+        for (double multiplier : List.of(BOOST, COLLAPSE, ABOVE_MAXIMUM)) {
+            var modifiedBody = modified(healthy, multiplier);
+            double bounded = Math.min(MAXIMUM, multiplier);
+            assertEquals(bounded,
+                    fixture(modifiedBody, settings).bridge().armCoefficient("attacker", RIGHT), EPSILON);
+        }
+    }
+
+    @Test
+    public void armQueryHandlesDisabledUnboundAndUnmatchedBodies() {
+        // 无身体与无匹配组织明确返回 1；服主禁用时连 inspect 都不应发出。
+        DamagePreferences settings = preferences();
+        var fixture = fixture(body(), settings);
+        assertEquals(1, fixture.bridge().armCoefficient("unbound", RIGHT), EPSILON);
+        var legs = legBody().toBuilder().setId("test:attacker").build();
+        assertEquals(1, fixture(legs, settings).bridge().armCoefficient("attacker", LEFT), EPSILON);
+        var disabled = DamagePreferences.parse("hp_per_vanilla_hp = 1\n" + muscleConfig("false"));
+        BodyHealthHost unexpectedQuery = payload -> {
+            throw new AssertionError("禁用肌肉系数时不应查询身体");
+        };
+        var bridge = new VanillaDamageBridge(List.of(unexpectedQuery), disabled, List.of(integration()));
+        assertEquals(1, bridge.armCoefficient("attacker", RIGHT), EPSILON);
+        assertEquals(0, fixture.exertions().get());
+    }
+
+    @Test
+    public void futureArmQueryProjectsCurvesWithoutAdvancingAuthoritativeBody() {
+        // 未生效、插值、峰值、低谷和到期均复用核心曲线；疲劳不会在预估中恢复。
+        var healthy = scheduledArmCurve(body());
+        var tired = healthy.getTissueStates(1).toBuilder().setFatigue(HALF_HEALTH).build();
+        var snapshot = healthy.toBuilder().setTissueStates(1, tired).build();
+        var fixture = fixture(snapshot, preferences());
+        var bridge = fixture.bridge();
+        assertEquals(HALF_COEFFICIENT, bridge.armCoefficientAt("attacker", RIGHT, 0), EPSILON);
+        assertEquals(HALF_COEFFICIENT,
+                bridge.armCoefficientAt("attacker", RIGHT, QUERY_START_MILLIS), EPSILON);
+        double rising = HALF_COEFFICIENT * (1 + (CURVE_PEAK - 1) * HALF_COEFFICIENT);
+        assertEquals(rising, bridge.armCoefficientAt("attacker", RIGHT, QUERY_RISE_MILLIS), EPSILON);
+        assertEquals(HALF_COEFFICIENT * CURVE_PEAK,
+                bridge.armCoefficientAt("attacker", RIGHT, QUERY_PEAK_MILLIS), EPSILON);
+        assertEquals(MINIMUM, bridge.armCoefficientAt("attacker", RIGHT, QUERY_TROUGH_MILLIS), EPSILON);
+        assertEquals(HALF_COEFFICIENT,
+                bridge.armCoefficientAt("attacker", RIGHT, QUERY_END_MILLIS), EPSILON);
+        assertEquals(1, bridge.armCoefficientAt("attacker", LEFT, QUERY_PEAK_MILLIS), EPSILON);
+        assertEquals(0, fixture.exertions().get());
+        assertEquals(snapshot, BodyProtobuf.toMessage(fixture.store()
+                .find(new BodyId("test:attacker")).orElseThrow()));
+    }
+
+    @Test
+    public void futureArmQueryRejectsPastAndPreservesUnboundAndDisabledRules() {
+        // 回溯不是预测；无身体和规则禁用仍沿用当前查询的明确语义。
+        var healthy = body();
+        var current = healthy.getSettledAt().toBuilder().setElapsedMillis(QUERY_START_MILLIS).build();
+        var snapshot = healthy.toBuilder().setSettledAt(current).build();
+        DamagePreferences settings = preferences();
+        var fixture = fixture(snapshot, settings);
+        var bridge = fixture.bridge();
+        assertThrows(IllegalArgumentException.class, () -> bridge.armCoefficientAt("attacker", RIGHT, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> bridge.armCoefficientAt("attacker", RIGHT, QUERY_START_MILLIS - 1));
+        assertEquals(1, bridge.armCoefficientAt("unbound", RIGHT, QUERY_END_MILLIS), EPSILON);
+        var legs = legBody().toBuilder().setId("test:attacker").build();
+        assertEquals(1,
+                fixture(legs, settings).bridge().armCoefficientAt("attacker", LEFT, QUERY_END_MILLIS), EPSILON);
+        var disabled = DamagePreferences.parse("hp_per_vanilla_hp = 1\n" + muscleConfig("false"));
+        BodyHealthHost unexpectedQuery = payload -> {
+            throw new AssertionError("禁用肌肉系数时不应查询身体");
+        };
+        var disabledBridge = new VanillaDamageBridge(List.of(unexpectedQuery), disabled, List.of(integration()));
+        assertEquals(1, disabledBridge.armCoefficientAt("attacker", RIGHT, QUERY_END_MILLIS), EPSILON);
+        assertEquals(snapshot, BodyProtobuf.toMessage(fixture.store()
+                .find(new BodyId("test:attacker")).orElseThrow()));
+    }
 
     @Test
     public void coefficientUsesHealthFatigueModifiersAndBounds() {
@@ -354,6 +470,35 @@ public class MuscleDamageTest {
                 .addCurve(start)
                 .addCurve(end)
                 .setStrengthPeak(multiplier)
+                .setBurstPeak(1)
+                .setEndurancePeak(1)
+                .setRecoveryPeak(1)
+                .build();
+        return body.toBuilder().addModifiers(modifier).build();
+    }
+
+    private static BodyMessages.BodySnapshot scheduledArmCurve(BodyMessages.BodySnapshot body) {
+        // 从未来开始的完整曲线覆盖上升、峰顶、虚脱和到期边界。
+        var start = BodyMessages.CurvePoint.getDefaultInstance();
+        var peak = BodyMessages.CurvePoint.newBuilder()
+                .setOffsetMillis(QUERY_PEAK_OFFSET_MILLIS)
+                .setValue(1)
+                .build();
+        var trough = BodyMessages.CurvePoint.newBuilder()
+                .setOffsetMillis(QUERY_TROUGH_OFFSET_MILLIS)
+                .setValue(-1)
+                .build();
+        var end = BodyMessages.CurvePoint.newBuilder().setOffsetMillis(MODIFIER_DURATION_MILLIS).build();
+        var modifier = BodyMessages.CapabilityModifier.newBuilder()
+                .setId("test:future")
+                .setSource("test:source")
+                .setTissueId("right_muscle")
+                .setStartMillis(QUERY_START_MILLIS)
+                .addCurve(start)
+                .addCurve(peak)
+                .addCurve(trough)
+                .addCurve(end)
+                .setStrengthPeak(CURVE_PEAK)
                 .setBurstPeak(1)
                 .setEndurancePeak(1)
                 .setRecoveryPeak(1)

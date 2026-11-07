@@ -9,6 +9,7 @@ public final class VanillaDamageErrors {
     public static final String STAGGER = "stagger 必须声明 (0, 1] 内的门槛与移动倍率、正数时长比例、"
             + "不超过 60000 且下限不大于上限的整毫秒，以及非负的致伤类型系数";
     public static final String MUSCLE_CAPACITY = "出手肌肉的基础力量或可用力量无效";
+    public static final String MUSCLE_PROJECTION_TIME = "肌肉系数预估时刻不得为负或早于当前身体时刻";
     public static final String STRIKE_CONTEXT_MISSING = "近战伤害缺少出手上下文";
     public static final String STRIKE_CONTEXT_ORDER = "近战出手上下文顺序错误";
     public static final String DAMAGE_KIND_TAGS = "同一伤害类型不能属于多个 meridian:kind 标签";

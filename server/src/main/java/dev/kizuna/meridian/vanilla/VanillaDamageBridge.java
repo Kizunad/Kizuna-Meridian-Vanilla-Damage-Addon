@@ -64,6 +64,35 @@ public final class VanillaDamageBridge {
         return inspect(subjectId).map(Binding::body);
     }
 
+    public double armCoefficient(String subjectId, MuscleRules.Arm arm) {
+        // 撒放时重新读取权威身体，只取指定解剖侧的当前系数，不提交做功。
+        MuscleRules rules = preferences.muscle();
+        if (!rules.enabled()) {
+            return 1;
+        }
+        Optional<Binding> found = inspect(subjectId);
+        if (found.isEmpty()) {
+            return 1;
+        }
+        return rules.plan(found.get().body(), arm, MuscleRules.Grip.MAIN_HAND).coefficient();
+    }
+
+    public double armCoefficientAt(String subjectId, MuscleRules.Arm arm, long elapsedMillis) {
+        // 参考射击时刻使用当前快照中已登记的曲线，不预支未来做功或提交候选身体。
+        if (elapsedMillis < 0) {
+            throw new IllegalArgumentException(VanillaDamageErrors.MUSCLE_PROJECTION_TIME);
+        }
+        MuscleRules rules = preferences.muscle();
+        if (!rules.enabled()) {
+            return 1;
+        }
+        Optional<Binding> found = inspect(subjectId);
+        if (found.isEmpty()) {
+            return 1;
+        }
+        return rules.armCoefficientAt(found.get().body(), arm, elapsedMillis);
+    }
+
     public double exertStrike(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip,
                               double vanillaDamage) {
         // 手臂每次做功按调用方提供的原版剂量换算焦耳。

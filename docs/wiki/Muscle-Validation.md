@@ -172,3 +172,37 @@ D1 将做功与系数读取提升到一次完整出手上下文：玩家 `attack
 当前源码验证结果：`:server:test` 为 **22 项 JUnit，0 失败、0 错误、0 跳过**；
 `:fabric:runGametest` 为 **16 项必需 GameTest 全部通过**。其中新增或覆盖了原版剂量
 换算、线性出力、力竭阈值单调性、力竭失败码、负剂量拒绝、附效三字段、挥空与交互挥手配对。
+
+流浪商人等没有原版 `attack_damage` 属性的生物施放近战功法时，挥空使用既有默认正剂量记做功，不能因缺少该属性中断施放宿主。Humanoid 的 `missedKickDoesNotBreakNextStrike` 在空场施放腿击后再验证下一击能够伤害目标。
+
+## 行矢只读拉弦查询验证（2026-11-03）
+
+新增当前解剖侧查询 `armCoefficient` 和参考身体时刻预估 `armCoefficientAt`。
+未来查询在内存候选上复用 Framework 冻结时间推进与原肌力公式，不写回宿主。
+回归覆盖左右侧、受伤、疲劳更新、系数夹取、禁用不查询、无身体与无匹配组织、
+未来曲线的未生效／插值／峰值／低谷／到期、非法回溯，以及权威身体全量不变。
+
+`bash "gradlew" --no-daemon :server:test :fabric:compileGametestJava build --console=plain`
+通过，服务端为 **27 项 JUnit，0 失败、0 错误、0 跳过**。代码形状整理后再次执行
+`:server:test`，结果相同。
+
+完整装配的 `test build :fabric:runGametest` 通过 **18 项必需 GameTest**
+（本仓 17 项及 Minecraft 内置 `always_pass`）。新增实体回归使用左主手玩家检查解剖侧及
+未来到期查询，使用真实箭来源检查命中不重复乘肌力、不重复做功；旧用例全部保留通过。
+
+运行使用新目录 `fabric/build/gametest-wayfarer-l2-20261103-b`，从既有本地测试配置复制
+已接受的 `eula.txt`，未删除旧世界。为补齐工作区未构建的完整装配依赖，通过正式工作区参数
+只读引用 `~/Code` 已有安装产物；Damage、Technique、Framework 保持当前工作区源码：
+
+```sh
+bash "gradlew" --no-daemon test build :fabric:runGametest \
+  "-PgametestRunDir=build/gametest-wayfarer-l2-20261103-b" \
+  "-PkizunaCodeDir=/home/kiz/Code" \
+  "-Pkizuna.dir.framework=/home/kiz/Code-wayfarer/Kizuna-Meridian-Mod-Framework" \
+  "-Pkizuna.dir.technique=/home/kiz/Code-wayfarer/Kizuna-Meridian-Technique-Framework" \
+  "-Pkizuna.dir.vanilla-damage=/home/kiz/Code-wayfarer/Kizuna-Meridian-Vanilla-Damage-Addon" \
+  --console=plain
+```
+
+日志为 `/tmp/wayfarer-l2-damage-gametest-2.log`。这项证据覆盖 Damage 回归，
+不代表 Human／Threatening 尚在开发的射击宿主或行矢正式目录已经联调通过。

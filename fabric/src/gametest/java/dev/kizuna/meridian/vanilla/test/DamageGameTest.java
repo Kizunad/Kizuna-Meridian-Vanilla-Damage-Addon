@@ -8,6 +8,7 @@ import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostResponse;
 import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageTypeTags;
+import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvanceMode;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvancePlan;
 import dev.kizuna.meridian.server.BodyCommandHandler;
@@ -423,6 +424,45 @@ public final class DamageGameTest implements BodyHealthHost {
         }
         return HealthHostProtobuf.encodeResponse(response.setBody(BodyProtobuf.toMessage(
                 STORE.find(found.get().id()).orElseThrow())).build());
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void armQueryUsesAnatomicalSideWithoutRecordingWork(GameTestHelper context) {
+        // 左主手玩家也按调用方指定的解剖侧取值，重复查询不能增加疲劳或 revision。
+        var attacker = context.makeMockPlayer(GameType.SURVIVAL);
+        attacker.setMainArm(HumanoidArm.LEFT);
+        bindMuscles(attacker, BOOST);
+        var before = body(attacker);
+        assertClose(context, VanillaDamageFabric.armCoefficient(attacker, HumanoidArm.LEFT), 1,
+                "左臂不应读取右臂修正");
+        assertClose(context, VanillaDamageFabric.armCoefficient(attacker, HumanoidArm.RIGHT), BOOST,
+                "右臂必须读取当前力量修正");
+        long expiredMillis = before.settledAt().elapsedMillis() + MODIFIER_MILLIS;
+        assertClose(context, VanillaDamageFabric.armCoefficientAt(attacker, HumanoidArm.RIGHT, expiredMillis), 1,
+                "参考时刻已到期的修正不应继续提高初速");
+        context.assertTrue(before.equals(body(attacker)), "只读拉弦查询不应修改身体");
+        var unbound = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        assertClose(context, VanillaDamageFabric.armCoefficient(unbound, HumanoidArm.RIGHT), 1,
+                "无身体宿主拉弦系数应为 1");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void arrowDamageDoesNotScaleOrExertAgain(GameTestHelper context) {
+        // 箭在撒放时已经计入拉弦初速，真实箭来源的命中剂量不能再乘射手肌力。
+        var attacker = context.spawn(EntityTypes.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindMuscles(attacker, BOOST);
+        var beforeBody = body(attacker);
+        var arrow = context.spawn(EntityTypes.ARROW, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        arrow.setOwner(attacker);
+        var target = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        var source = target.damageSources().arrow(arrow, attacker);
+        context.assertTrue(!source.is(VanillaDamageTypeTags.MELEE), "原版箭不应进入近战标签");
+        float beforeHealth = target.getHealth();
+        target.hurtServer(context.getLevel(), source, STRIKE_DAMAGE);
+        assertClose(context, beforeHealth - target.getHealth(), STRIKE_DAMAGE, "箭伤害不应重复乘肌力");
+        context.assertTrue(beforeBody.equals(body(attacker)), "箭命中不应给射手再记做功");
+        context.succeed();
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)

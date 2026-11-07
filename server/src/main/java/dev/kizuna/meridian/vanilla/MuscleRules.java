@@ -1,6 +1,8 @@
 package dev.kizuna.meridian.vanilla;
 
 import dev.kizuna.meridian.core.Anatomy;
+import dev.kizuna.meridian.core.BodyTimeAdvancement;
+import dev.kizuna.meridian.core.TimeCursor;
 import dev.kizuna.meridian.core.TissueCapabilities;
 import dev.kizuna.meridian.protocol.BodyProtobuf;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
@@ -146,6 +148,26 @@ public record MuscleRules(boolean enabled, String tissueTag, Parts parts, Coeffi
 
     public Plan plan(BodySnapshot snapshot, Arm mainArm, Grip grip) {
         return plan(snapshot, mainArm, grip, Group.ARMS, 0);
+    }
+
+    public double armCoefficientAt(BodySnapshot snapshot, Arm arm, long elapsedMillis) {
+        // 只在内存候选中推进曲线时钟，冻结伤势、疲劳和老化，不写回宿主。
+        long currentMillis = snapshot.getSettledAt().getElapsedMillis();
+        if (elapsedMillis < currentMillis) {
+            throw new IllegalArgumentException(VanillaDamageErrors.MUSCLE_PROJECTION_TIME);
+        }
+        if (!enabled) {
+            return 1;
+        }
+        if (elapsedMillis == currentMillis || snapshot.getVitality().getDead()) {
+            return plan(snapshot, arm, Grip.MAIN_HAND).coefficient();
+        }
+        var body = BodyProtobuf.fromMessage(snapshot);
+        TimeCursor current = body.settledAt();
+        var target = new TimeCursor(current.domain(), current.epoch(), elapsedMillis);
+        var projection = new BodyTimeAdvancement.Plan(target, 0, BodyTimeAdvancement.Mode.LIFESPAN_ONLY);
+        var projected = BodyTimeAdvancement.apply(body, projection).body();
+        return plan(BodyProtobuf.toMessage(projected), arm, Grip.MAIN_HAND).coefficient();
     }
 
     public Plan plan(BodySnapshot snapshot, Arm mainArm, Grip grip, double vanillaDamage) {

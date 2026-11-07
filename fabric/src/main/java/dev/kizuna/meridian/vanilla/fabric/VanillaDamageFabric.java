@@ -157,12 +157,39 @@ public final class VanillaDamageFabric implements ModInitializer {
         return preferences().muscle().plan(attacker, mainArm(entity), grip).coefficient();
     }
 
-    private static MuscleRules.Arm mainArm(LivingEntity attacker) {
-        // 原版主手侧映射到肌力规则的左右臂分组。
-        if (attacker.getMainArm() == net.minecraft.world.entity.HumanoidArm.LEFT) {
+    public static double armCoefficient(LivingEntity entity, net.minecraft.world.entity.HumanoidArm arm) {
+        // 调用方明确传入拉弦臂的左右侧，不把持武器手或玩家主手侧误当出力臂。
+        return bridge.armCoefficient(entity.getStringUUID(), anatomicalArm(arm));
+    }
+
+    public static Optional<BodyMessages.BodySnapshot> inspectBody(LivingEntity entity) {
+        // 预估调用方读取同一唯一宿主快照，不能通过此入口提交或改写身体。
+        return bridge.inspectBody(entity.getStringUUID());
+    }
+
+    public static double armCoefficientAt(LivingEntity entity, net.minecraft.world.entity.HumanoidArm arm,
+                                          long elapsedMillis) {
+        // 指定同一身体时钟中的未来参考时刻，预估候选不写回权威身体。
+        return bridge.armCoefficientAt(entity.getStringUUID(), anatomicalArm(arm), elapsedMillis);
+    }
+
+    public static double armCoefficientAt(BodyMessages.BodySnapshot candidate,
+                                          net.minecraft.world.entity.HumanoidArm arm, long elapsedMillis) {
+        // 调用方提供只读候选，解剖侧、肌力配置与系数夹取仍由伤害附属统一解释。
+        return preferences().muscle().armCoefficientAt(candidate, anatomicalArm(arm), elapsedMillis);
+    }
+
+    private static MuscleRules.Arm anatomicalArm(net.minecraft.world.entity.HumanoidArm arm) {
+        // 原版解剖侧与规则侧一一对应，主副手的解释留在宿主。
+        if (arm == net.minecraft.world.entity.HumanoidArm.LEFT) {
             return MuscleRules.Arm.LEFT;
         }
         return MuscleRules.Arm.RIGHT;
+    }
+
+    private static MuscleRules.Arm mainArm(LivingEntity attacker) {
+        // 原版主手侧映射到肌力规则的左右臂分组。
+        return anatomicalArm(attacker.getMainArm());
     }
 
     public static void endApplication(LivingEntity entity) {

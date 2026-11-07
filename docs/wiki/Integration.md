@@ -20,6 +20,34 @@ AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDam
 
 ## 可信 Protobuf 入口
 
+### 撒放时的只读手臂系数
+
+`VanillaDamageFabric.armCoefficient(LivingEntity entity, HumanoidArm arm)` 在服务端向唯一身体宿主
+重新查询当前快照，按显式的左臂或右臂计算肌肉系数。纯 Java 对应入口是
+`VanillaDamageBridge.armCoefficient(String subjectId, MuscleRules.Arm arm)`。
+宿主按施放选定的持武器手与实体实际主手侧，传入另一条拉弦臂；接口不自行猜测手位。
+每次撒放都重新查询，不复用起手或近战出手缓存。
+
+计算复用近战的力量比例、伤势、疲劳、修正曲线和配置夹取；不构造或提交做功命令，
+不增加疲劳、训练负荷或 revision。无身体、无匹配手臂肌肉时取 1；配置禁用时直接取 1，
+不查询身体。宿主失败或重复认领仍报错，不当成无身体。拉弦做功由功法费用承担。
+箭命中仍由原版速度结算，未进入 `#meridian:melee`，Damage 不再乘系数或记一笔手臂做功。
+
+`VanillaDamageFabric.armCoefficientAt(entity, arm, elapsedMillis)` 供同时到达的弹道计算预估参考平射
+时刻；纯 Java 对应 `VanillaDamageBridge.armCoefficientAt(subjectId, arm, elapsedMillis)`，已有快照
+可直接用 `MuscleRules.armCoefficientAt(snapshot, arm, elapsedMillis)`。时刻必须属于当前身体时钟，
+不得早于快照时刻；负值和回溯请求报错。查询会重新读取宿主，在内存候选上调用 Framework 的
+`BodyTimeAdvancement`（`LIFESPAN_ONLY`、老化倍率 0），冻结当前伤势、疲劳与寿命，只读取已登记
+曲线在参考时刻的值和到期状态，再复用同一肌力公式及夹取。候选不提交，权威 revision、身体时钟、
+资源、任务和疲劳均不改变；不会预言后续受伤、做功或新加曲线。功法起手已经登记的未来曲线可直接
+参与预估。实际撒放仍调用当前查询，不能把未来预估缓存作为实际初速系数。
+
+`VanillaDamageFabric.inspectBody(entity)` 只读返回唯一宿主的当前身体快照或无身体结果。
+需要预估功法自身尚未登记的修正时，内容宿主可以在该不可变快照上构造候选，随后调用同一
+`VanillaDamageFabric.armCoefficientAt(candidate, arm, elapsedMillis)`。此重载复用
+`MuscleRules.armCoefficientAt`，调用方无需依赖 Damage 的内部配置类型；候选不得提交，
+也不能用于当前撒放系数。未知宿主错误仍向上传递。
+
 Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost`。宿主实现 `exchange(byte[])`，交换 protoc 生成的 `HealthHostRequest` / `HealthHostResponse`；`.proto` 位于 Framework 的 `shared/src/main/proto/kizuna/meridian/v1/health_host.proto`。
 
 ```json
