@@ -20,6 +20,28 @@ AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDam
 
 ## 可信 Protobuf 入口
 
+### 可信指定部位伤害与局部护甲修正
+
+服务端主线程可调用 `VanillaDamageFabric.damageDirect(DirectDamage)`，参数为目标、真实 `DamageSource`、
+实际 `partId` 和正数身体 HP。来源的 `kind/*`、`bypasses_armor` 等标签沿用正常伤害映射。
+入口固定唯一宿主和部位，经局部护甲后裁到该部位剩余 HP，避免过量药伤转成其他部位的溢伤。
+未绑定、死体或归零部位返回空；未知部位和已认领宿主失败明确报错。
+入口先执行原版 `isInvulnerableTo`、已死/正在死检查及玩家 abilities 无敌检查。
+创造与旁观玩家的无敌仍遵守 `bypasses_invulnerability`，绕过无敌帧不等于绕过无敌状态。
+
+此入口直接提交身体事务，不经过原版 `hurtServer`，因此不吃无敌帧、盾挡，不产生击退；
+也不另走原版抗性和保护附魔阶段。局部黄心、图腾复用必装 Healing 的伤害上下文和已有集成协议。
+`registerDamageScope(DamageScope)` 接受上层附属的 `enter(entity)` / `exit(entity)` 登记；
+直接伤害逐个进入、逆序退出，提交或进入失败也释放此前已进入的上下文。
+Healing 初始化时登记自己的伤害上下文，Damage 源码与编译产物均不依赖 Healing。
+成功后记录攻击者、击杀归属、伤害观察者和僵直，死亡与图腾消费沿已有实体同步路径执行。
+它不自动执行近战做功或攻击方附效。输入单位是身体 HP，内部按 Damage 配置转换后再共用结算。
+
+附属通过 `registerPartArmorModifier` 注册只读回调，接收目标、部位、覆盖槽和真实物品，返回非负有限倍率。
+所有提供方的倍率相乘，用于该件护甲值与韧性，再执行现有耐久曲线与减伤公式；无效结果直接报错。
+`coveredEquipmentSlot(body, partId)` 公开实际模板的配置覆盖关系，附属无需复制人体覆盖表。
+回调不改变物品耐久；蚀甲等内容须在自己的效果周期调用原版物品耐久入口。
+
 ### 撒放时的只读手臂系数
 
 `VanillaDamageFabric.armCoefficient(LivingEntity entity, HumanoidArm arm)` 在服务端向唯一身体宿主

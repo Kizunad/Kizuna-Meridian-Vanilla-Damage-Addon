@@ -334,6 +334,28 @@ public final class VanillaDamageBridge {
         return Optional.of(new PreparedHit(subjectId, sourceId, kind, binding.get(), target));
     }
 
+    public Optional<PreparedHit> prepareDirect(String subjectId, String sourceId, DamageKind kind, String partId) {
+        // 可信调用固定真实部位，沿用同一宿主、护甲覆盖和身体伤害事务。
+        Optional<Binding> binding = inspect(subjectId);
+        if (binding.isEmpty() || binding.get().body().getVitality().getDead()) {
+            return Optional.empty();
+        }
+        BodySnapshot body = binding.get().body();
+        boolean exists = body.getStructure().getPartsList().stream().anyMatch(part -> part.getId().equals(partId));
+        if (!exists) {
+            throw VanillaDamageErrors.hostRejected(FailureCode.MODULE_NOT_FOUND);
+        }
+        double hp = body.getPartStatesList().stream().filter(part -> part.getId().equals(partId))
+                .findFirst().orElseThrow().getHp();
+        if (hp == 0) {
+            return Optional.empty();
+        }
+        HealthTarget target = HealthTarget.newBuilder()
+                .setPartId(partId)
+                .build();
+        return Optional.of(new PreparedHit(subjectId, sourceId, kind, binding.get(), Optional.of(target)));
+    }
+
     public final class PreparedHit {
         private final String subjectId;
         private final String sourceId;
@@ -361,6 +383,14 @@ public final class VanillaDamageBridge {
         public Optional<HealthTarget> target() {
             // 调试观察方读取已经固定的命中目标，不重新抽取部位。
             return target;
+        }
+
+        public double directDose(double damageAfterArmor) {
+            // 指定部位的直接伤害不产生溢伤；在局部护甲之后裁到该账户剩余 HP。
+            String partId = target.orElseThrow().getPartId();
+            double hp = binding.body().getPartStatesList().stream()
+                    .filter(part -> part.getId().equals(partId)).findFirst().orElseThrow().getHp();
+            return Math.min(damageAfterArmor, preferences.vanillaHp(hp));
         }
 
         public long staggerMillis(double damageAfterEffects) {

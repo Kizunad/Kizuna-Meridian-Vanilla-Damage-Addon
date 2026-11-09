@@ -62,14 +62,14 @@ public class MuscleDamageTest {
         var injuredPart = healthy.getPartStates(0).toBuilder().setHp(HALF_HEALTH).build();
         var asymmetric = modified(healthy.toBuilder().setPartStates(0, injuredPart).build(), BOOST);
         var fixture = fixture(asymmetric, preferences());
+        var beforeQueries = fixture.store().find(new BodyId("test:attacker")).orElseThrow();
         var bridge = fixture.bridge();
         for (int query = 0; query < 2; query++) {
             assertEquals(HALF_COEFFICIENT, bridge.armCoefficient("attacker", LEFT), EPSILON);
             assertEquals(BOOST, bridge.armCoefficient("attacker", RIGHT), EPSILON);
         }
         assertEquals(0, fixture.exertions().get());
-        assertEquals(asymmetric, BodyProtobuf.toMessage(fixture.store()
-                .find(new BodyId("test:attacker")).orElseThrow()));
+        assertEquals(beforeQueries, fixture.store().find(new BodyId("test:attacker")).orElseThrow());
     }
 
     @Test
@@ -121,6 +121,7 @@ public class MuscleDamageTest {
         var tired = healthy.getTissueStates(1).toBuilder().setFatigue(HALF_HEALTH).build();
         var snapshot = healthy.toBuilder().setTissueStates(1, tired).build();
         var fixture = fixture(snapshot, preferences());
+        var beforeQueries = fixture.store().find(new BodyId("test:attacker")).orElseThrow();
         var bridge = fixture.bridge();
         assertEquals(HALF_COEFFICIENT, bridge.armCoefficientAt("attacker", RIGHT, 0), EPSILON);
         assertEquals(HALF_COEFFICIENT,
@@ -134,8 +135,7 @@ public class MuscleDamageTest {
                 bridge.armCoefficientAt("attacker", RIGHT, QUERY_END_MILLIS), EPSILON);
         assertEquals(1, bridge.armCoefficientAt("attacker", LEFT, QUERY_PEAK_MILLIS), EPSILON);
         assertEquals(0, fixture.exertions().get());
-        assertEquals(snapshot, BodyProtobuf.toMessage(fixture.store()
-                .find(new BodyId("test:attacker")).orElseThrow()));
+        assertEquals(beforeQueries, fixture.store().find(new BodyId("test:attacker")).orElseThrow());
     }
 
     @Test

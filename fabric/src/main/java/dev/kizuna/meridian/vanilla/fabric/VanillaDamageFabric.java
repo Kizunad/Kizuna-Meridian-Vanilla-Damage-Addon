@@ -26,6 +26,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
@@ -52,15 +53,19 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Objects;
+import net.minecraft.world.entity.player.Player;
 
 /** 在原版护甲阶段固定部位，保留后续非护甲结算，并向身体提交一次伤害。 */
 public final class VanillaDamageFabric implements ModInitializer {
+    private static final int PLAYER_DAMAGE_MEMORY_TICKS = 100;
     private static final Logger LOGGER = LoggerFactory.getLogger("meridian_vanilla_damage");
     private static final Map<LivingEntity, DamageSource> pendingDeaths = new IdentityHashMap<>();
     private static final Map<LivingEntity, Deque<AttackEffectMessages.StatusEffect>> pendingStatusEffects =
             new IdentityHashMap<>();
     private static final Map<LivingEntity, Deque<DamageFrame>> applications = new IdentityHashMap<>();
     private static final List<DamageObserver> damageObservers = new CopyOnWriteArrayList<>();
+    private static final List<PartArmorModifier> armorModifiers = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
     private static DamagePreferences preferences;
 
@@ -76,6 +81,112 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     public record DamageInput(DamageKind kind, double rawDamage, double damageAfterEffects,
                               Optional<HealthTarget> hit) { }
+
+    /** 部位倍率只参与本次单件护甲计算，耐久仍由物品保存。 */
+    @FunctionalInterface
+    public interface PartArmorModifier {
+        double multiplier(LivingEntity entity, String partId, EquipmentSlot slot, ItemStack stack);
+    }
+
+    public record DirectDamage(LivingEntity target, DamageSource source, String partId, double damageHp) {
+        public DirectDamage {
+            // 可信入口仍拒绝非法剂量和缺失来源，防止把坏数据带入身体事务。
+            if (target == null || source == null || partId == null || partId.isBlank()
+                    || !Double.isFinite(damageHp) || damageHp <= 0) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+        }
+    }
+
+    public static void registerPartArmorModifier(PartArmorModifier modifier) {
+        // 提供方必须已安装；它的失败不能被解释成没有护甲修正。
+        armorModifiers.add(Objects.requireNonNull(modifier));
+    }
+
+    /** 同步伤害的动态上下文；退出顺序与进入顺序相反。 */
+    public interface DamageScope {
+        void enter(LivingEntity entity);
+
+        void exit(LivingEntity entity);
+    }
+
+    public static void registerDamageScope(DamageScope scope) {
+        // Healing 等上层附属主动登记，Damage 不依赖提供方的类或构建产物。
+        DamageScopes.register(scope);
+    }
+
+    public static Optional<VanillaDamageBridge.CommitResult> damageDirect(DirectDamage damage) {
+        // 直接提交绕开原版伤害入口的无敌帧、盾挡和击退，局部护甲仍由伤害标签决定。
+        LivingEntity target = damage.target();
+        if (!(target.level() instanceof ServerLevel level) || !level.getServer().isSameThread()) {
+            throw new IllegalStateException(VanillaDamageErrors.DAMAGE);
+        }
+        DamageSource source = damage.source();
+        if (target.isDeadOrDying() || target.isInvulnerableTo(level, source)) {
+            return Optional.empty();
+        }
+        if (target instanceof Player player && player.getAbilities().invulnerable
+                && !source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+            return Optional.empty();
+        }
+        String sourceId = source.typeHolder().unwrapKey().orElseThrow().identifier().toString();
+        DamageKind kind = attackSource(source, sourceId).kind();
+        Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepareDirect(
+                target.getStringUUID(), sourceId, kind, damage.partId());
+        if (prepared.isEmpty()) {
+            return Optional.empty();
+        }
+        VanillaDamageBridge.PreparedHit hit = prepared.get();
+        double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
+        double afterArmor = localArmorDamage(target, source, hit, rawVanillaHp);
+        double dose = hit.directDose(afterArmor);
+        try (var scope = DamageScopes.enter(target)) {
+            var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
+            var input = new DamageInput(kind, rawVanillaHp, dose, hit.target());
+            finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit);
+            return Optional.of(result);
+        }
+    }
+
+    private static void finishDirectDamage(DamageEvent event, VanillaDamageBridge.PreparedHit hit) {
+        // 击杀归属和观察者只在提交成功后记录；原版死亡、图腾沿已有同步路径执行。
+        LivingEntity target = event.target();
+        LivingEntity attacker = event.attacker();
+        if (attacker != null) {
+            target.setLastHurtByMob(attacker);
+            attacker.setLastHurtMob(target);
+        }
+        if (attacker instanceof Player player) {
+            target.setLastHurtByPlayer(player, PLAYER_DAMAGE_MEMORY_TICKS);
+        }
+        target.getCombatTracker().recordDamage(event.source(), (float) event.input().damageAfterEffects());
+        notifyDamageObservers(event);
+        if (event.result().deathPrevented()) {
+            ((TotemAccess) target).meridian$tryUseTotem(event.source());
+        }
+        if (event.result().body().getVitality().getDead()) {
+            pendingDeaths.put(target, event.source());
+            finishDamage(target);
+        } else {
+            stagger(target, hit.staggerMillis(event.input().damageAfterEffects()));
+        }
+    }
+
+    public static Optional<EquipmentSlot> coveredEquipmentSlot(BodyMessages.BodySnapshot body, String partId) {
+        // 用实际身体模板和当前 Damage 配置决定装备覆盖，药效不复制人体覆盖表。
+        return preferences().armor().coveredSlot(body.getTemplate().getId(), partId)
+                .map(VanillaDamageFabric::equipmentSlot);
+    }
+
+    private static EquipmentSlot equipmentSlot(ArmorRules.Slot slot) {
+        // 将纯规则槽位映射到原版装备槽，所有调用共享此处。
+        return switch (slot) {
+            case HEAD -> EquipmentSlot.HEAD;
+            case CHEST -> EquipmentSlot.CHEST;
+            case LEGS -> EquipmentSlot.LEGS;
+            case FEET -> EquipmentSlot.FEET;
+        };
+    }
 
     public static DamagePreferences preferences() {
         // AI 预估复用伤害结算同一份已校验规则，只读，不能替换或改写配置。
@@ -310,12 +421,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (source.is(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
             return (float) damage;
         }
-        EquipmentSlot slot = switch (coveredSlot.get()) {
-            case HEAD -> EquipmentSlot.HEAD;
-            case CHEST -> EquipmentSlot.CHEST;
-            case LEGS -> EquipmentSlot.LEGS;
-            case FEET -> EquipmentSlot.FEET;
-        };
+        EquipmentSlot slot = equipmentSlot(coveredSlot.get());
         var stack = entity.getItemBySlot(slot);
         if (!stack.is(armorTag(slot))) {
             return (float) damage;
@@ -325,9 +431,28 @@ public final class VanillaDamageFabric implements ModInitializer {
             double remainingRatio = 1 - stack.getDamageValue() / (double) stack.getMaxDamage();
             remainingDurability = OptionalDouble.of(Math.max(0, Math.min(1, remainingRatio)));
         }
+        String partId = hit.target().orElseThrow().getPartId();
+        double multiplier = partArmorMultiplier(entity, partId, slot, stack);
         return (float) hit.remainingVanillaDamage(damage,
-                armorAttribute(stack, slot, Attributes.ARMOR),
-                armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS), remainingDurability);
+                armorAttribute(stack, slot, Attributes.ARMOR) * multiplier,
+                armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS) * multiplier, remainingDurability);
+    }
+
+    private static double partArmorMultiplier(LivingEntity entity, String partId,
+                                              EquipmentSlot slot, ItemStack stack) {
+        // 合并全部已注册附属；非法值明确失败，不能静默恢复为完整护甲。
+        double product = 1;
+        for (PartArmorModifier modifier : armorModifiers) {
+            double multiplier = modifier.multiplier(entity, partId, slot, stack);
+            if (!Double.isFinite(multiplier) || multiplier < 0) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+            product *= multiplier;
+        }
+        if (!Double.isFinite(product)) {
+            throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+        }
+        return product;
     }
 
     private static TagKey<Item> armorTag(EquipmentSlot slot) {
@@ -381,7 +506,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (millis == 0) {
             return;
         }
-        var stagger = new TechniqueService.Stagger(millis, preferences.stagger().movementMultiplier());
+        var stagger = new TechniqueService.Stagger(millis, preferences.stagger().movementMultiplier(),
+                TechniqueService.StaggerKind.HIT);
         TechniqueFabric.service().stagger(entity.getUUID(), stagger);
     }
 
