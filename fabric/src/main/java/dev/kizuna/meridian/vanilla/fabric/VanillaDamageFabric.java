@@ -227,6 +227,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             applications.clear();
             bridge.clearAttackEffectState();
             VanillaStrikeContext.clear();
+            VanillaInfusions.clear();
         });
     }
 
@@ -245,7 +246,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
         }
         applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>())
-                .push(new DamageFrame(rawDamage, coefficient));
+                .push(new DamageFrame(source, rawDamage, coefficient));
         return (float) scaledDamage;
     }
 
@@ -304,15 +305,17 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     public static void endApplication(LivingEntity entity) {
-        // 完全抵挡或被吸收的调用也会返回，此时丢弃尚未提交的命中上下文。
+        // 完全抵挡或被吸收的调用也会返回，此时丢弃尚未提交的命中上下文；打进去的主击留给附伤。
         Deque<DamageFrame> frames = applications.get(entity);
         if (frames == null) {
             return;
         }
-        frames.pop();
+        DamageFrame frame = frames.pop();
         if (frames.isEmpty()) {
             applications.remove(entity);
         }
+        double doseHp = frame.rawDamage * frame.muscleMultiplier;
+        VanillaInfusions.record(entity, frame.source, doseHp, Optional.ofNullable(frame.hit));
     }
 
     public static Optional<Float> prepareArmor(LivingEntity entity, DamageSource source, float rawDamage) {
@@ -549,6 +552,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         if (!entity.isAlive()) {
             pendingStatusEffects.remove(entity);
+            VanillaInfusions.discard(entity);
             return;
         }
         Deque<AttackEffectMessages.StatusEffect> statusEffects = pendingStatusEffects.remove(entity);
@@ -557,6 +561,7 @@ public final class VanillaDamageFabric implements ModInitializer {
                 applyStatusEffect(entity, statusEffects.removeFirst());
             }
         }
+        VanillaInfusions.land(entity);
     }
 
     private static void confirmDeath(LivingEntity entity) {
@@ -566,6 +571,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         pendingDeaths.remove(entity);
         pendingStatusEffects.remove(entity);
+        VanillaInfusions.discard(entity);
         try {
             bridge.died(entity.getStringUUID());
         } catch (RuntimeException failure) {
@@ -575,6 +581,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     private static final class DamageFrame {
+        private final DamageSource source;
         private final float rawDamage;
         private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
@@ -582,8 +589,9 @@ public final class VanillaDamageFabric implements ModInitializer {
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;
 
-        private DamageFrame(float rawDamage, double muscleMultiplier) {
+        private DamageFrame(DamageSource source, float rawDamage, double muscleMultiplier) {
             // 附效上限仍以乘系数前的原版剂量为准，额外伤害不重复乘肌肉系数。
+            this.source = source;
             this.rawDamage = rawDamage;
             this.muscleMultiplier = muscleMultiplier;
         }

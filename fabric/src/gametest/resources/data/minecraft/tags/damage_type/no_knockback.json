@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "meridian_damage_test:infuse_heat",
+    "meridian_damage_test:infuse_cold",
+    "meridian_damage_test:infuse_earth",
+    "meridian_damage_test:still_strike"
+  ]
+}

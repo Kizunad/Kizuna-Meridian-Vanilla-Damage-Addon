@@ -385,6 +385,11 @@ public final class VanillaDamageBridge {
             return target;
         }
 
+        public BodySnapshot body() {
+            // 选点时读到的目标身体，附伤按它的经脉内腔定相克；只读，不经它提交。
+            return binding.body();
+        }
+
         public double directDose(double damageAfterArmor) {
             // 指定部位的直接伤害不产生溢伤；在局部护甲之后裁到该账户剩余 HP。
             String partId = target.orElseThrow().getPartId();

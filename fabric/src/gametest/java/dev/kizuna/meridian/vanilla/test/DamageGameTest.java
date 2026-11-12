@@ -816,7 +816,12 @@ public final class DamageGameTest implements BodyHealthHost {
     }
 
     private static void bindMuscles(LivingEntity entity, double rightMultiplier) {
-        // 两臂共用固定构型；零值表示右臂疲劳耗尽，正值只修改右臂力量。
+        // 两臂身体原样交给测试宿主。
+        STORE.registerBody(BodyProtobuf.fromMessage(armsBody(entity, rightMultiplier).build()));
+    }
+
+    static BodyMessages.BodySnapshot.Builder armsBody(LivingEntity entity, double rightMultiplier) {
+        // 两臂共用固定构型；零值表示右臂疲劳耗尽，正值只修改右臂力量；附伤用例在此基础上加附属进度。
         var left = new Anatomy.PartId("left_upper_arm");
         var right = new Anatomy.PartId("right_upper_arm");
         var leftMuscle = testMuscle("left_muscle", left);
@@ -839,7 +844,7 @@ public final class DamageGameTest implements BodyHealthHost {
         if (rightMultiplier > 0) {
             message.addModifiers(strengthModifier(rightMultiplier));
         }
-        STORE.registerBody(BodyProtobuf.fromMessage(message.build()));
+        return message;
     }
 
     private static void bindLegMuscles(LivingEntity entity) {
@@ -927,7 +932,7 @@ public final class DamageGameTest implements BodyHealthHost {
         }
     }
 
-    private static void bind(LivingEntity entity, String templateId, String partId, double hp) {
+    static void bind(LivingEntity entity, String templateId, String partId, double hp) {
         // 与人体无关的单部位构型，专门保护原版桥接与框架账本之间的边界。
         var part = new Anatomy.PartId(partId);
         var structure = new BodyStructure(List.of(new Anatomy.PartDefinition(part, "外壳", 100)),
@@ -944,7 +949,12 @@ public final class DamageGameTest implements BodyHealthHost {
         }
     }
 
-    private static BodySnapshot body(LivingEntity entity) {
+    static void register(BodySnapshot body) {
+        // 同包的附伤用例自己拼身体（多部位、带附属进度），仍交给这一个测试宿主认领。
+        STORE.registerBody(body);
+    }
+
+    static BodySnapshot body(LivingEntity entity) {
         // 断言直接读取核心的不可变事实，避免只验证桥接返回值。
         return STORE.find(new BodyId(entity.getStringUUID())).orElseThrow();
     }

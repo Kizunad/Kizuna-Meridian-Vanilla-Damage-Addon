@@ -49,6 +49,8 @@ public final class VanillaDamageErrors {
     public static final String ATTACK_EFFECT_PLAN = "攻击方附效方案无效";
     public static final String ATTACK_EFFECT_STATUS = "攻击方状态效果无效";
     public static final String ATTACK_EFFECT_PROVIDER = "攻击方附效提供方抛出异常或重复认领";
+    public static final String INFUSION = "五行附伤取值失败，本次附伤丢弃";
+    public static final String INFUSION_DAMAGE_TYPE = "附行的伤害类型没有注册，本次附伤丢弃";
 
     private VanillaDamageErrors() {
         // 诊断集中维护，不解析文案来决定游戏行为。

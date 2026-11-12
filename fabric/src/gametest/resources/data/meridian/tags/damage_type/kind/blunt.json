@@ -4,6 +4,7 @@
     "meridian_damage_test:two_strike",
     "meridian_damage_test:leg_off_strike",
     "meridian_damage_test:leg_two_strike",
-    "meridian_damage_test:leg_aim_strike"
+    "meridian_damage_test:leg_aim_strike",
+    "meridian_damage_test:infuse_earth"
   ]
 }

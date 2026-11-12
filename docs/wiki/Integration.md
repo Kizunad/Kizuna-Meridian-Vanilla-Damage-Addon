@@ -94,12 +94,22 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 提供方示例（只用于仓库 GameTest）在 `fabric/src/gametest/resources/fabric.mod.json` 注册；功法库等其他仓库应依赖本仓库 server JAR 并自行实现入口，本仓库不会修改它们。
 
+## 五行附伤接入
+
+附伤不走 `meridian_attack_effect` 提供方：功法库在主人身体的 `addonProgress`（键 `meridian_technique:state`）里写 `ActiveInfusion`，Damage 在主击打进去后读主人只读快照，交给功法库 `TechniqueInfusions.strike` 求值，再自己落伤害。内容附属要做的只有数据：
+
+- 注册附伤用的 `damage_type`，并打上对应 `#meridian:kind/*`、`#minecraft:no_knockback`、`#minecraft:bypasses_cooldown`；不要放进 `#meridian:melee` 或 `#meridian:infusable`。
+- 让自己的近战伤害类型带附伤：进 `#meridian:melee`（同时接入肌肉与附效）即可；只想带附伤不想吃肌肉系数时进 `#meridian:infusable`。
+- 直接实体不是攻击者本人、伤害类型又不能整体收进来的（例如尖牙的 `indirect_magic`），把实体类型追加进 `#meridian:infusable_direct`；造成伤害的实体是召唤物、要按它的主人找附行的，追加进 `#meridian:infusion_via_owner`，召唤物须实现 `TraceableEntity`；没实现的仍按它自己找附行，通常就不带附伤。
+
+规则与原版附带见[五行附伤](Damage-Rules.md#五行附伤)。
+
 死亡通过 `confirm_body_death` 确认；它不生成伪造的大额伤害，不覆盖局部 HP。身体、释放账户和回执的保存仍属于宿主唯一状态，本附属不另存一套身体。
 
 必装 Vanilla Healing 注册 `meridian_damage_integration`，实现 Framework `BodyDamageIntegration` 的 Protobuf 准备与提交通知。`PreparedHit.commitIntegrated` 在固定命中后读取只减伤的方案，将受保护的剩余伤害提交到同一宿主；效果成功响应必须附带同请求固定 `HealthResult`，其格式和命令一致性经框架校验后才消费图腾。已绑定的命中必须由唯一效果集成认领，没有认领直接报错；完全局部吸收无需 HP 事务。原版治疗与局部黄心详见[伤害规则](Damage-Rules.md)。
 
 ## 验证范围与失败行为
 
-必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。服务端单元回归覆盖攻击附效的无认领、单认领、多认领、未绑定攻击者、远程跳过、上限截断、异常和 `effect_id` 去重；Fabric GameTest 在真实 Minecraft 服务端使用仓库内测试提供方验证僵尸近战命中合并附加剂量和状态效果，并继续验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品属性组件、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。挥手包用例的假玩家取自功法库 `fabric` 的 `testFixtures`（`TestPlayers.detached`：正式网络处理器、不进玩家列表），与功法 fabric 同经源码组合解析。
+必要整体回归覆盖配置及选点、覆盖表与公式修改、伤害单位换算、耐久曲线端点及插值、无耐久物品、减免比例上限与执行顺序、异常配置拒绝、真实框架请求链、拒绝与唯一宿主、单次命中提交和死亡保留伤势。服务端单元回归覆盖攻击附效的无认领、单认领、多认领、未绑定攻击者、远程跳过、上限截断、异常和 `effect_id` 去重；Fabric GameTest 在真实 Minecraft 服务端使用仓库内测试提供方验证僵尸近战命中合并附加剂量和状态效果，并继续验证玩家和普通生物的局部护甲路径、未覆盖与未绑定分支、物品属性组件、磨损前耐久曲线、耐久衰减后限幅、不可损坏护甲、原版耐久磨损、抗性、全身保护附魔、吸收生命、绕甲来源、无敌帧、超出原版剩余血量的完整剂量及两种死亡方向；测试宿主和样例身体不进入安装 JAR。五行附伤由 `DamageInfusionGameTest` 覆盖：主人是绑了身体、`addonProgress` 里直接放 `ActiveInfusion` 的僵尸，附伤类型用测试数据包里的 `meridian_damage_test:infuse_*`。用例验证有身体目标的同部位、伤害类型、致伤机制、剂量、不击退与无敌帧不变，没身体目标的原版扣血与无敌帧恢复，着火、冻结上限、冻不了的跳过、追加击退的方向、主击击退之后的净增量与击退抗性折算，目标处的命中声包，没身体、没附行、到期、箭都不带，恼鬼按主人带、主人死了不带，尖牙有主人带、没主人不带，主击打死目标、盾挡、部位已是 0 HP 都没有附伤。相克倍率的端到端用例在五脏诀仓。挥手包用例的假玩家取自功法库 `fabric` 的 `testFixtures`（`TestPlayers.detached`：正式网络处理器、不进玩家列表），与功法 fabric 同经源码组合解析。
 
 Minecraft 实体状态与身体 Store 之间目前没有跨系统持久化事务。同步失败记录日志并抛错，不继续原版扣血，不宣称可靠补偿或恰好一次世界副作用；框架内部的身体变更与成功回执仍为原子提交。Windows 手动游玩、专服多人及其他战斗模组兼容需要独立验收。

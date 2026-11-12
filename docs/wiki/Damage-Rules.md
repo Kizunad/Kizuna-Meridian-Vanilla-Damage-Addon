@@ -242,6 +242,7 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 | 标签 | 含义 | 默认成员 |
 |---|---|---|
 | `#meridian:melee` | 肌肉系数、做功和攻击方附效入口 | `minecraft:player_attack`、`minecraft:mob_attack`、`minecraft:mob_attack_no_aggro`、`minecraft:spear`、`minecraft:mace_smash` |
+| `#meridian:infusable` | 主击打进去后补[五行附伤](#五行附伤) | `#meridian:melee` |
 | `#meridian:leg` | 使用腿部肌肉组和腿部做功换算 | 空 |
 | `#meridian:off_hand` | 副手侧出手；带 `leg` 时取副手侧腿 | 空 |
 | `#meridian:two_handed` | 双臂出手；带 `leg` 时合并两条腿 | 空 |
@@ -250,6 +251,8 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 | `#meridian:kind/cutting` | 指定切割 | 空 |
 | `#meridian:kind/piercing` | 指定穿刺 | `minecraft:spear` |
 | `#meridian:kind/heat`、`cold`、`electric`、`corrosive`、`toxic` | 指定对应 Framework 致伤类型 | 空 |
+
+另有两个 `entity_type` 标签只给五行附伤用：`#meridian:infusable_direct`（直接实体是这些类型时也带附伤，默认 `minecraft:evoker_fangs`）和 `#meridian:infusion_via_owner`（造成伤害的实体是这些类型时，按 `TraceableEntity.getOwner()` 再找一跳主人，默认 `minecraft:vex`）。
 
 例如在 `data/meridian/tags/damage_type/melee.json` 的 `values` 中追加 `other_mod:slash`，再在 `kind/cutting.json` 追加同一 ID，即可同时接入肌肉、附效与切割分类。出手侧和 `leg` 标签仅在近战做功时生效。标签在加载、重载时校验；同一伤害类型进入两个 `kind/*` 标签或两个 `aim/*` 标签会报错，使用时也拒绝歧义，不按遍历顺序选择。
 
@@ -266,6 +269,32 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 enabled = true
 max_extra_ratio = 4.0
 ```
+
+## 五行附伤
+
+主击真的打进去以后，如果主人身体上有没到期的附行（功法库 `elemental_infusion` 算子写入的 `ActiveInfusion`），Damage 在同一目标上再补一记本行伤害。数值由功法库 `TechniqueInfusions.strike` 给出：附伤 = 剂量 × 比例 × 曲线值 × 相克倍率，Damage 只负责判来源、找主人、落伤害和原版附带。
+
+**哪些伤害带附伤**：伤害类型在 `#meridian:infusable` 里（默认就是 `#meridian:melee`），或直接实体的类型在 `#meridian:infusable_direct` 里（默认唤魔者尖牙；尖牙的 `indirect_magic` 也是喷溅药水的类型，不能整个收进来）。箭、三叉戟等投射物与非近战伤害默认不带。附伤类型不应放进这两个标签；即使配错，附伤自己打出的伤害也不再记附伤。
+
+**主人**：取 `source.getEntity()`。它的类型在 `#meridian:infusion_via_owner` 里时再查一跳主人；只认标签白名单，不对所有 `TraceableEntity` 生效，免得驯服动物也带上。主人必须是活着的 `LivingEntity`、和目标在同一世界、绑定了身体，且身体上的附行没到期；附行在命中时才查，所以先召出的恼鬼照样带附伤，主人死了就不带。
+
+**剂量**是主击过肌肉、未过护甲的原版伤害，即攻击方附效上下文字段 7 的含义；无敌帧内补伤只取补上的差额。尖牙不吃肌肉系数，剂量就是原版值。附伤不走攻击方附效提供方，不受 `max_extra_ratio` 限制，也不合并进主击的身体事务。
+
+**什么算打进去**：主击进入了原版 `actuallyHurt`，且过肌肉后的剂量大于 0。目标无敌、无敌帧内没超过上次、盾整个挡下（原版仍以 0 调用 `actuallyHurt`）都不算。附伤在原版 `hurt` 返回阶段、主击的死亡与状态效果结算之后执行；主击已打死目标时丢弃。
+
+**有身体的目标**走[可信指定部位伤害](Integration.md#可信指定部位伤害与局部护甲修正)：打在主击固定的同一部位，过该部位局部护甲与部位倍率，不经原版受伤入口，因此不吃也不改无敌帧、不击退、不播受伤动画；该部位已是 0 HP 时这一记丢弃，也不向别处溢出。相克倍率按选点时读到的目标身体算。
+
+**没身体的目标**按 ×1 照样吃附伤：用本行伤害类型走一次原版受伤，原版护甲照常算。附伤类型应进 `#minecraft:no_knockback` 与 `#minecraft:bypasses_cooldown`，这次受伤才不击退、不被无敌帧挡；打完 `invulnerableTime` 与 `lastHurt` 恢复成主击之后的值，下一击的门槛不变。这条路会多一次原版受伤动画和声音。
+
+两条路的附伤源都是造成伤害的实体为主人（击杀归主人）、直接实体沿用主击的（攻击者本人、尖牙或恼鬼）；致伤机制照常按 `kind/*` 标签。附伤真的落下且目标还活着时，再做附行声明的原版小附带：
+
+| 附带 | 做法 |
+|---|---|
+| 着火 | `igniteForTicks`，原版取剩余燃烧时间与新值的较大者 |
+| 冻结 | 冻结刻加上声明值，封在完全冻住所需刻数 − 1，永远不会冻伤；`canFreeze()` 为假的生物跳过 |
+| 追加击退 | 按目标击退抗性折算后直接加到水平速度上，方向从直接实体指向目标；不用原版 `knockback`，它会先把已有速度减半，主击已击退时只净增一小截 |
+
+附行带命中声时在目标位置播放，相克与被克时的音量、音高调整已由功法库算好。声音类别与功法施放声一致：主人是玩家归 `PLAYERS`，敌对生物归 `HOSTILE`，其余归 `NEUTRAL`。主人附行解析失败、伤害类型没有注册时记录日志并丢弃这一记附伤，主击已经提交，不回滚。
 
 ## 死亡与保留伤势
 

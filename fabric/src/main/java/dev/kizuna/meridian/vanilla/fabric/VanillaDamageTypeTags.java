@@ -16,6 +16,7 @@ import net.minecraft.world.damagesource.DamageType;
 /** 数据包标签决定近战接入与出手侧；致伤分类冲突必须明确拒绝。 */
 public final class VanillaDamageTypeTags {
     public static final TagKey<DamageType> MELEE = tag("melee");
+    public static final TagKey<DamageType> INFUSABLE = tag("infusable");
     public static final TagKey<DamageType> LEG = tag("leg");
     public static final TagKey<DamageType> OFF_HAND = tag("off_hand");
     public static final TagKey<DamageType> TWO_HANDED = tag("two_handed");
