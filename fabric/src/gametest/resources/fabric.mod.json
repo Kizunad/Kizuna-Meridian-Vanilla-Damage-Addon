@@ -7,6 +7,7 @@
   "entrypoints": {
     "fabric-gametest": [
       "dev.kizuna.meridian.vanilla.test.DamageGameTest",
+      "dev.kizuna.meridian.vanilla.test.DamageHintsGameTest",
       "dev.kizuna.meridian.vanilla.test.DamageInfusionGameTest"
     ],
     "meridian_health_host": ["dev.kizuna.meridian.vanilla.test.DamageGameTest"],

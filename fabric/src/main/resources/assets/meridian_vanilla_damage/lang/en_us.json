@@ -7,5 +7,10 @@
   "damage_kind.meridian.electric": "Electric",
   "damage_kind.meridian.corrosive": "Corrosive",
   "damage_kind.meridian.toxic": "Toxic",
-  "damage_kind.meridian.custom": "Custom"
+  "damage_kind.meridian.custom": "Custom",
+  "tooltip.meridian_vanilla_damage.armor.head": "Covers: head, neck",
+  "tooltip.meridian_vanilla_damage.armor.chest": "Covers: chest, abdomen, both upper arms",
+  "tooltip.meridian_vanilla_damage.armor.legs": "Covers: pelvis, thighs, lower legs",
+  "tooltip.meridian_vanilla_damage.armor.feet": "Covers: both feet",
+  "message.meridian_vanilla_damage.first_injury": "Your hearts show the combined health of every body part: below two hearts, or with the head emptied, you die. To see each part, press %s to open the workspace and click the body on the Inspect page."
 }

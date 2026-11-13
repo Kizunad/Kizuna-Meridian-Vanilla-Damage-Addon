@@ -521,6 +521,9 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static void notifyDamageObservers(DamageEvent event) {
         // 调试观察失败不能回滚已经提交的身体；每个观察方独立隔离异常。
+        if (!event.result().body().getVitality().getDead()) {
+            DamageHints.injured(event.target());
+        }
         for (DamageObserver observer : damageObservers) {
             try {
                 observer.onDamage(event);

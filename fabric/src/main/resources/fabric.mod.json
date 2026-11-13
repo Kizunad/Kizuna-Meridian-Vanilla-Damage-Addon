@@ -9,6 +9,7 @@
   "environment": "*",
   "entrypoints": {
     "main": ["dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric"],
+    "client": ["dev.kizuna.meridian.vanilla.fabric.client.VanillaDamageClient"],
     "meridian_attack_effect": []
   },
   "mixins": ["meridian_vanilla_damage.mixins.json"],
