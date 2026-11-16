@@ -6,6 +6,8 @@ import dev.kizuna.meridian.protocol.DamageIntegrationProtobuf;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationContext;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationPlan;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationCommit;
+import dev.kizuna.meridian.core.CapabilityModifier;
+import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostRequest;
@@ -32,6 +34,7 @@ import java.util.UUID;
 
 /** 每个事件先确定唯一执行方，再向同一宿主提交受版本保护的意图。 */
 public final class VanillaDamageBridge {
+    private static final String DAMAGE_SOURCE = "meridian_vanilla:damage";
     private final List<BodyHealthHost> hosts;
     private final DamagePreferences preferences;
     private final List<BodyDamageIntegration> integrations;
@@ -419,16 +422,37 @@ public final class VanillaDamageBridge {
         }
 
         public CommitResult commitIntegrated(double damageAfterEffects, boolean bypassesDeathProtection) {
+            // 没有附带的普通提交。
+            return commitIntegrated(damageAfterEffects, bypassesDeathProtection, DamageExtras.NONE);
+        }
+
+        public boolean fits(List<BodyMessages.CapabilityModifier> modifiers) {
+            // 身体最多带 32 条修正；同 ID 的会被换掉，不占新位置。装不下时调用方应当只提交伤害。
+            Set<String> incoming = new HashSet<>();
+            modifiers.forEach(modifier -> incoming.add(modifier.getId()));
+            long kept = binding.body().getModifiersList().stream()
+                    .filter(existing -> !incoming.contains(existing.getId()))
+                    .count();
+            return kept + incoming.size() <= CapabilityModifier.MAX_PER_BODY;
+        }
+
+        public CommitResult commitIntegrated(double damageAfterEffects, boolean bypassesDeathProtection,
+                                             DamageExtras extras) {
             // 固定伤害上下文后询问效果附属；纯方案失败时不能预先消费黄心或图腾。
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
             }
             var damage = DamageBody.newBuilder()
-                    .setSourceId("meridian_vanilla:damage")
+                    .setSourceId(DAMAGE_SOURCE)
                     .setDamageType(sourceId)
                     .setKind(kind)
                     .setDamageHp(preferences.damageHp(damageAfterEffects));
             target.ifPresent(damage::setHit);
+            // 透劲份额原样交给健康宿主的分层；附带修正的来源写成本附属，开始时刻留给框架按这笔事务的身体时钟写。
+            extras.organShare().ifPresent(damage::setOrganShare);
+            for (BodyMessages.CapabilityModifier modifier : extras.modifiers()) {
+                damage.addAddModifiers(modifier.toBuilder().setSource(DAMAGE_SOURCE).clearStartMillis());
+            }
             if (!damage.hasHit()) {
                 // 无实际目标交由核心验证，不将其当作缺少集成。
                 committed = true;
@@ -501,6 +525,25 @@ public final class VanillaDamageBridge {
         }
 
         private record PreparedIntegration(BodyDamageIntegration integration, DamageIntegrationPlan plan) { }
+    }
+
+    /**
+     * 一下伤害另带给身体的两样：透进器官的份额（缺省照伤害种类的分层），和扣血同一笔加上的能力修正。
+     * 修正只填 ID、目标、曲线和倍率；来源和开始时刻由本附属和框架写。完全被吸收的伤害不提交，也就不加修正。
+     */
+    public record DamageExtras(OptionalDouble organShare, List<BodyMessages.CapabilityModifier> modifiers) {
+        public static final DamageExtras NONE = new DamageExtras(OptionalDouble.empty(), List.of());
+
+        public DamageExtras {
+            // 份额只接受 [0, 1]；列表固定下来，调用方之后再改不影响这一下。
+            if (organShare.isPresent()) {
+                double share = organShare.getAsDouble();
+                if (!Double.isFinite(share) || share < 0 || share > 1) {
+                    throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+                }
+            }
+            modifiers = List.copyOf(modifiers);
+        }
     }
 
     public record CommitResult(BodySnapshot before, BodySnapshot body, HealthResult health) {

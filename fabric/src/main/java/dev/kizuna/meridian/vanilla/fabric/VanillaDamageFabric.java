@@ -2,6 +2,7 @@ package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
+import dev.kizuna.meridian.vanilla.fabric.mixin.HurtSoundAccess;
 import dev.kizuna.meridian.vanilla.fabric.mixin.TotemAccess;
 import dev.kizuna.meridian.vanilla.ArmorRules;
 import dev.kizuna.meridian.vanilla.AttackEffectProvider;
@@ -59,6 +60,8 @@ import net.minecraft.world.entity.player.Player;
 /** 在原版护甲阶段固定部位，保留后续非护甲结算，并向身体提交一次伤害。 */
 public final class VanillaDamageFabric implements ModInitializer {
     private static final int PLAYER_DAMAGE_MEMORY_TICKS = 100;
+    /** 原版受伤动作的时长（tick）。 */
+    private static final int HURT_PRESENTATION_TICKS = 10;
     private static final Logger LOGGER = LoggerFactory.getLogger("meridian_vanilla_damage");
     private static final Map<LivingEntity, DamageSource> pendingDeaths = new IdentityHashMap<>();
     private static final Map<LivingEntity, Deque<AttackEffectMessages.StatusEffect>> pendingStatusEffects =
@@ -88,13 +91,36 @@ public final class VanillaDamageFabric implements ModInitializer {
         double multiplier(LivingEntity entity, String partId, EquipmentSlot slot, ItemStack stack);
     }
 
-    public record DirectDamage(LivingEntity target, DamageSource source, String partId, double damageHp) {
+    public record DirectDamage(LivingEntity target, DamageSource source, String partId, double damageHp,
+                               DirectExtras extras) {
+        public DirectDamage(LivingEntity target, DamageSource source, String partId, double damageHp) {
+            // 不带透劲、护甲倍数和附带的普通直接伤害。
+            this(target, source, partId, damageHp, DirectExtras.NONE);
+        }
+
         public DirectDamage {
             // 可信入口仍拒绝非法剂量和缺失来源，防止把坏数据带入身体事务。
-            if (target == null || source == null || partId == null || partId.isBlank()
+            if (target == null || source == null || partId == null || partId.isBlank() || extras == null
                     || !Double.isFinite(damageHp) || damageHp <= 0) {
                 throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
             }
+        }
+    }
+
+    /**
+     * 直接伤害这一下另带的三样：透进器官的份额、只对这一下生效的局部护甲倍数、和扣血同一笔加到目标身上的能力修正。
+     * 护甲倍数和 {@link #registerPartArmorModifier} 登记的倍数相乘；修正装不下（身体最多 32 条）时这一下只算伤害。
+     */
+    public record DirectExtras(OptionalDouble organShare, double armorMultiplier,
+                               List<BodyMessages.CapabilityModifier> modifiers) {
+        public static final DirectExtras NONE = new DirectExtras(OptionalDouble.empty(), 1, List.of());
+
+        public DirectExtras {
+            // 护甲倍数是非负有限数；份额的范围由桥接层的附带检查。
+            if (organShare == null || !Double.isFinite(armorMultiplier) || armorMultiplier < 0) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+            modifiers = List.copyOf(modifiers);
         }
     }
 
@@ -113,6 +139,25 @@ public final class VanillaDamageFabric implements ModInitializer {
     public static void registerDamageScope(DamageScope scope) {
         // Healing 等上层附属主动登记，Damage 不依赖提供方的类或构建产物。
         DamageScopes.register(scope);
+    }
+
+    /** 原版血量按本附属的配置换成身体 HP；只依赖 Fabric 模块的附属给直接伤害填剂量时用。 */
+    public static double bodyHp(double vanillaHp) {
+        return preferences().damageHp(vanillaHp);
+    }
+
+    /**
+     * 这一下照伤害来源的部位组会落在目标的哪个部位：和普通受伤入口同一套权重，随机数取目标自己的。
+     * 目标没绑身体、已死或选不出部位时为空。给目录只写了部位组、却要走直接伤害的打击用。
+     */
+    public static Optional<String> aimedPart(LivingEntity target, DamageSource source) {
+        String sourceId = source.typeHolder().unwrapKey().orElseThrow().identifier().toString();
+        AttackSource attack = attackSource(source, sourceId);
+        return bridge.prepare(target.getStringUUID(), sourceId, attack.attackerId(), attack.kind(),
+                        target.getRandom().nextDouble(), attack.aimGroup())
+                .flatMap(VanillaDamageBridge.PreparedHit::target)
+                .filter(HealthTarget::hasPartId)
+                .map(HealthTarget::getPartId);
     }
 
     public static Optional<VanillaDamageBridge.CommitResult> damageDirect(DirectDamage damage) {
@@ -136,16 +181,63 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (prepared.isEmpty()) {
             return Optional.empty();
         }
-        VanillaDamageBridge.PreparedHit hit = prepared.get();
-        double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
-        double afterArmor = localArmorDamage(target, source, hit, rawVanillaHp);
-        double dose = hit.directDose(afterArmor);
-        try (var scope = DamageScopes.enter(target)) {
-            var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
+        return Optional.of(commitDirect(damage, prepared.get(), kind));
+    }
+
+    /**
+     * 给刚挨了一下直接伤害的活物补原版的受伤表现：红闪、受伤动作、受伤声。
+     * 直接伤害不经原版受伤入口，这些都没有；拳脚这类「打在身上」的调用方提交成功后调一次，药、毒照旧不闪。
+     * 不动无敌帧，也不击退；目标已经死了或正在死时不做，交给死亡同步。
+     */
+    public static void presentHurt(LivingEntity target, DamageSource source) {
+        if (!(target.level() instanceof ServerLevel level) || target.isDeadOrDying()) {
+            return;
+        }
+        // 服务端自己也记上受伤动作的时长，和原版受伤入口记的一样；客户端的红闪和动作靠这条伤害事件。
+        target.hurtDuration = HURT_PRESENTATION_TICKS;
+        target.hurtTime = target.hurtDuration;
+        level.broadcastDamageEvent(target, source);
+        ((HurtSoundAccess) target).meridian$playHurtSound(source);
+    }
+
+    private static VanillaDamageBridge.CommitResult commitDirect(DirectDamage damage,
+                                                                 VanillaDamageBridge.PreparedHit hit, DamageKind kind) {
+        // 近战类型先按出手的肌肉系数折算（和普通路同一个出手上下文，一次出手只记一次做功），
+        // 再过局部护甲、裁到部位剩余。
+        LivingEntity target = damage.target();
+        DamageSource source = damage.source();
+        DirectExtras extras = damage.extras();
+        try (var strike = VanillaStrikeContext.damage(source); var scope = DamageScopes.enter(target)) {
+            double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
+            double scaled = rawVanillaHp * directCoefficient(source, rawVanillaHp);
+            double afterArmor = localArmorDamage(target, source, hit, scaled, extras.armorMultiplier());
+            double dose = hit.directDose(afterArmor);
+            var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
+                    attachable(target, hit, extras));
             var input = new DamageInput(kind, rawVanillaHp, dose, hit.target());
             finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit);
-            return Optional.of(result);
+            return result;
         }
+    }
+
+    private static double directCoefficient(DamageSource source, double rawVanillaHp) {
+        // 只有带近战标签、由活物打出的直接伤害才折算；药、毒这类照旧不看谁的手臂。
+        if (!source.is(VanillaDamageTypeTags.MELEE) || !(source.getEntity() instanceof LivingEntity attacker)) {
+            return 1;
+        }
+        return VanillaStrikeContext.coefficient(attacker, source, rawVanillaHp);
+    }
+
+    private static VanillaDamageBridge.DamageExtras attachable(LivingEntity target,
+                                                               VanillaDamageBridge.PreparedHit hit,
+                                                               DirectExtras extras) {
+        // 修正装不下时不让整下伤害被拒：只提交伤害和透劲份额，记一条警告。
+        if (hit.fits(extras.modifiers())) {
+            return new VanillaDamageBridge.DamageExtras(extras.organShare(), extras.modifiers());
+        }
+        LOGGER.warn("直接伤害的附带修正装不下，这一下只算伤害：target={} modifiers={}",
+                target.getStringUUID(), extras.modifiers().size());
+        return new VanillaDamageBridge.DamageExtras(extras.organShare(), List.of());
     }
 
     private static void finishDirectDamage(DamageEvent event, VanillaDamageBridge.PreparedHit hit) {
@@ -419,7 +511,13 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static float localArmorDamage(LivingEntity entity, DamageSource source,
                                           VanillaDamageBridge.PreparedHit hit, double damage) {
-        // 只读取命中槽位的单件护甲，不叠加其他装备或实体固有属性。
+        // 没有本次护甲倍数的普通结算。
+        return localArmorDamage(entity, source, hit, damage, 1 /* hitMultiplier */);
+    }
+
+    private static float localArmorDamage(LivingEntity entity, DamageSource source,
+                                          VanillaDamageBridge.PreparedHit hit, double damage, double hitMultiplier) {
+        // 只读取命中槽位的单件护甲，不叠加其他装备或实体固有属性；本次倍数（透劲）和登记的部位倍数相乘。
         Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
         if (source.is(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
             return (float) damage;
@@ -435,7 +533,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             remainingDurability = OptionalDouble.of(Math.max(0, Math.min(1, remainingRatio)));
         }
         String partId = hit.target().orElseThrow().getPartId();
-        double multiplier = partArmorMultiplier(entity, partId, slot, stack);
+        double multiplier = partArmorMultiplier(entity, partId, slot, stack) * hitMultiplier;
         return (float) hit.remainingVanillaDamage(damage,
                 armorAttribute(stack, slot, Attributes.ARMOR) * multiplier,
                 armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS) * multiplier, remainingDurability);

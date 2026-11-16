@@ -9,6 +9,7 @@ import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageTypeTags;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
+import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvanceMode;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.TimeAdvancePlan;
 import dev.kizuna.meridian.server.BodyCommandHandler;
@@ -57,6 +58,7 @@ import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.GameType;
 
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -78,6 +80,9 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final double BOOST = 1.3;
     private static final double COLLAPSE = 0.85;
     private static final float STRIKE_DAMAGE = 4;
+    private static final double ORGAN_SHARE = 0.6;
+    private static final long NUMB_MILLIS = 6_000;
+    private static final double NUMB_PEAK = 0.3;
     private static final float EXHAUSTED_DAMAGE = 1;
     private static final long MODIFIER_MILLIS = 1000;
     private static final double EPSILON = 1e-5;
@@ -495,6 +500,96 @@ public final class DamageGameTest implements BodyHealthHost {
         assertClose(context, cowBefore - cow.getHealth(), expected,
                 "无身体目标须先乘系数再走原版全身护甲");
         context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void directMeleeScalesByTheStrikerOncePerStrikeAndOtherDirectDamageDoesNot(GameTestHelper context) {
+        // 可信指定部位伤害：带近战标签、由活物打出的先乘出手的肌肉系数，并给出手臂记做功；
+        // 同一次出手里连打两个目标只记一笔；不带近战标签的照旧不乘、不记。
+        var attacker = context.spawn(EntityTypes.ZOMBIE, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        bindMuscles(attacker, BOOST);
+        var first = armsTarget(context);
+        var second = armsTarget(context);
+        var melee = first.damageSources().mobAttack(attacker);
+        try (var strike = VanillaStrikeContext.damage(melee)) {
+            direct(first, melee, VanillaDamageFabric.DirectExtras.NONE);
+            direct(second, melee, VanillaDamageFabric.DirectExtras.NONE);
+        }
+        assertClose(context, rightArmLoss(first), STRIKE_DAMAGE * BOOST, "直接近战伤害没有乘出手的肌肉系数");
+        assertClose(context, rightArmLoss(second), STRIKE_DAMAGE * BOOST, "同一次出手的第二个目标没有用同一个系数");
+        context.assertTrue(body(attacker).revision() == 1, "一次出手打两个目标只能记一笔做功");
+        context.assertTrue(body(attacker).tissueStates().get(1).fatigue() > 0, "出手右臂没有记做功");
+        var third = armsTarget(context);
+        direct(third, third.damageSources().magic(), VanillaDamageFabric.DirectExtras.NONE);
+        assertClose(context, rightArmLoss(third), STRIKE_DAMAGE, "不带近战标签的直接伤害不该乘系数");
+        context.assertTrue(body(attacker).revision() == 1, "不带近战标签的直接伤害不该记做功");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void directExtrasCarryOrganShareArmorMultiplierAndModifiers(GameTestHelper context) {
+        // 这一下另带的三样：附带的修正和扣血同一个版本落到目标身上；本次护甲倍数为 0 时胸甲不减伤，为 1 时照常减。
+        var numbed = armsTarget(context);
+        var numb = numb("right_muscle");
+        var extras = new VanillaDamageFabric.DirectExtras(OptionalDouble.of(ORGAN_SHARE), 1, List.of(numb));
+        direct(numbed, numbed.damageSources().magic(), extras);
+        var hurt = body(numbed);
+        assertClose(context, rightArmLoss(numbed), STRIKE_DAMAGE, "带附带的直接伤害剂量变了");
+        context.assertTrue(hurt.revision() == 1, "伤害和附带的修正不在同一笔里：" + hurt.revision());
+        // 两臂身体本来带一条右臂力量修正，附带的麻是另外多出来的一条。
+        context.assertTrue(hurt.modifiers().size() == 2 && hurt.modifiers().stream()
+                .anyMatch(modifier -> modifier.id().value().equals(numb.getId())),
+                "目标身上没有留下附带的修正：" + hurt.modifiers());
+
+        double[] losses = new double[2];
+        for (int index = 0; index < losses.length; index++) {
+            var armored = context.makeMockPlayer(GameType.SURVIVAL);
+            bind(armored, "human:adult", "chest", MUSCLE_HP);
+            armored.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
+            armored.tick();
+            var through = new VanillaDamageFabric.DirectExtras(OptionalDouble.empty(), index, List.of());
+            var source = armored.damageSources().mobAttack(null);
+            VanillaDamageFabric.damageDirect(new VanillaDamageFabric.DirectDamage(armored, source, "chest",
+                    STRIKE_DAMAGE, through)).orElseThrow();
+            losses[index] = MUSCLE_HP - body(armored).partStates().get(0).hp();
+        }
+        assertClose(context, losses[0], STRIKE_DAMAGE, "本次护甲倍数为 0 时胸甲不该减伤");
+        double reduced = CombatRules.getDamageAfterAbsorb(context.makeMockPlayer(GameType.SURVIVAL), STRIKE_DAMAGE,
+                context.getLevel().damageSources().mobAttack(null), CHEST_ARMOR, CHEST_TOUGHNESS);
+        assertClose(context, losses[1], reduced, "本次护甲倍数为 1 时胸甲应照常减伤");
+        context.succeed();
+    }
+
+    private static LivingEntity armsTarget(GameTestHelper context) {
+        // 在世界里的两臂身体，直接伤害都打右上臂。
+        var target = context.spawn(EntityTypes.ZOMBIE, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        bindMuscles(target, 1);
+        return target;
+    }
+
+    private static void direct(LivingEntity target, DamageSource source, VanillaDamageFabric.DirectExtras extras) {
+        // 走可信指定部位入口，必须提交成功。
+        VanillaDamageFabric.damageDirect(new VanillaDamageFabric.DirectDamage(target, source, "right_upper_arm",
+                STRIKE_DAMAGE, extras)).orElseThrow();
+    }
+
+    private static double rightArmLoss(LivingEntity target) {
+        // 两臂身体的第二个部位是右上臂。
+        return MUSCLE_HP - body(target).partStates().get(1).hp();
+    }
+
+    private static BodyMessages.CapabilityModifier numb(String tissueId) {
+        // 麻：这块肌肉的力量和功率乘 0.3，持续 6 秒；来源和开始时刻由伤害附属和框架填。
+        return BodyMessages.CapabilityModifier.newBuilder()
+                .setId("meridian_damage_test:numb")
+                .setTissueId(tissueId)
+                .addCurve(BodyMessages.CurvePoint.newBuilder().setOffsetMillis(0).setValue(1))
+                .addCurve(BodyMessages.CurvePoint.newBuilder().setOffsetMillis(NUMB_MILLIS).setValue(1))
+                .setStrengthPeak(NUMB_PEAK)
+                .setBurstPeak(NUMB_PEAK)
+                .setEndurancePeak(1)
+                .setRecoveryPeak(1)
+                .build();
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
