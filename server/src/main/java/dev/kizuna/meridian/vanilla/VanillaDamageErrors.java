@@ -26,6 +26,7 @@ public final class VanillaDamageErrors {
     public static final String DEFAULT_RESOURCE = "缺少默认配置资源";
     public static final String SCALE = "hp_per_vanilla_hp 必须是 (0, 1000] 内的数值";
     public static final String ANATOMIES = "anatomies 必须是表";
+    public static final String AIMS = "aims 必须是表";
     public static final String PART_GROUPS = "身体部位分组必须是表";
     public static final String PART_ARRAY = "部位分组必须是字符串数组";
     public static final String DUPLICATE_PART = "部位 ID 为空或重复";

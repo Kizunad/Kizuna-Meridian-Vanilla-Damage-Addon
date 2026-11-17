@@ -21,12 +21,14 @@ public final class VanillaDamageTypeTags {
     public static final TagKey<DamageType> OFF_HAND = tag("off_hand");
     public static final TagKey<DamageType> TWO_HANDED = tag("two_handed");
     public static final TagKey<DamageType> AIM_HEAD = tag("aim/head");
+    public static final TagKey<DamageType> AIM_HEAD_NECK = tag("aim/head_neck");
     public static final TagKey<DamageType> AIM_TORSO = tag("aim/torso");
     public static final TagKey<DamageType> AIM_LEGS = tag("aim/legs");
     public static final TagKey<DamageType> AIM_ARMS = tag("aim/arms");
     public static final TagKey<DamageType> AIM_OTHER = tag("aim/other");
     private static final Map<TagKey<DamageType>, String> AIMS = Map.of(
             AIM_HEAD, "head",
+            AIM_HEAD_NECK, "head_neck",
             AIM_TORSO, "torso",
             AIM_LEGS, "legs",
             AIM_ARMS, "arms",

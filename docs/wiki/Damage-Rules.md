@@ -92,6 +92,9 @@ torso = ["neck", "chest", "abdomen", "pelvis"]
 arms = ["left_upper_arm", "right_upper_arm", "left_forearm", "right_forearm", "left_hand", "right_hand"]
 legs = ["left_thigh", "right_thigh", "left_lower_leg", "right_lower_leg", "left_foot", "right_foot"]
 
+[aims."human:adult"]
+head_neck = ["head", "neck"]
+
 [attackers."minecraft:spider"]
 head = 5
 torso = 15
@@ -106,7 +109,9 @@ other = 5
 
 这是一次成功攻击后的身体选点，不改变怪物 AI、箭矢轨迹或碰撞箱。远程攻击取 `DamageSource.getEntity()` 的射手类型。未知模板、未知攻击者或所有可用组权重为零时，在实际存在的部位间等概率选取；新增未分组部位使用 `other`。只有从实际构型移除的部位才退出候选。没有可用部位时由核心策略按当前构型处理，不生成虚构肢体。
 
-伤害类型可以声明 `#meridian:aim/head`、`#meridian:aim/torso`、`#meridian:aim/legs`、`#meridian:aim/arms` 或 `#meridian:aim/other`，把候选收敛到目标模板的对应 anatomy 分组，再从实际存在的部位中均匀选取。模板没有该分组或该组没有实际部位时，退回无 `aim` 的攻击者偏好路径；未声明 `aim` 时继续使用上面的攻击者偏好。一个伤害类型最多属于一个 `aim/*` 标签，冲突会在标签加载和使用时拒绝。
+伤害类型可以声明 `#meridian:aim/head`、`#meridian:aim/head_neck`、`#meridian:aim/torso`、`#meridian:aim/legs`、`#meridian:aim/arms` 或 `#meridian:aim/other`，把候选收敛到目标模板的对应分组，再从实际存在的部位中均匀选取。模板没有该分组或该组没有实际部位时，退回无 `aim` 的攻击者偏好路径；未声明 `aim` 时继续使用上面的攻击者偏好。一个伤害类型最多属于一个 `aim/*` 标签，冲突会在标签加载和使用时拒绝。
+
+瞄准的分组先查 `[aims."<模板>"]`，这张表里没有这个组名时再查 `[anatomies."<模板>"]` 的同名分组。`aims` 只给瞄准标签用，不参与攻击者偏好，所以里面的部位可以和 `anatomies`、和别的瞄准组重叠：随包的 `head_neck = ["head", "neck"]` 让「打头颈」的伤害在头、颈之间各一半，而颈在攻击者偏好里仍然算躯干的一份。旧配置文件里没有 `[aims]` 这一节时用随包的默认值，不改写服主的文件；写了 `[aims]` 就以文件里的为准。
 
 ## 致伤类型
 
@@ -246,7 +251,7 @@ Damage 自带以下 `damage_type` 数据包标签，其他模组可用 `replace:
 | `#meridian:leg` | 使用腿部肌肉组和腿部做功换算 | 空 |
 | `#meridian:off_hand` | 副手侧出手；带 `leg` 时取副手侧腿 | 空 |
 | `#meridian:two_handed` | 双臂出手；带 `leg` 时合并两条腿 | 空 |
-| `#meridian:aim/head`、`aim/torso`、`aim/legs`、`aim/arms`、`aim/other` | 在目标模板对应 anatomy 分组内均匀选取部位；缺组时退回普通偏好 | 空 |
+| `#meridian:aim/head`、`aim/head_neck`、`aim/torso`、`aim/legs`、`aim/arms`、`aim/other` | 在目标模板对应分组内均匀选取部位（先查 `aims`，再查 `anatomies`）；缺组时退回普通偏好 | 空 |
 | `#meridian:kind/blunt` | 指定钝击 | `minecraft:mace_smash` |
 | `#meridian:kind/cutting` | 指定切割 | 空 |
 | `#meridian:kind/piercing` | 指定穿刺 | `minecraft:spear` |

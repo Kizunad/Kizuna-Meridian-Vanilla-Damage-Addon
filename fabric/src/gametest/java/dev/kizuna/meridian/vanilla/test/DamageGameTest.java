@@ -57,6 +57,7 @@ import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.GameType;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.Optional;
@@ -80,6 +81,8 @@ public final class DamageGameTest implements BodyHealthHost {
     private static final double BOOST = 1.3;
     private static final double COLLAPSE = 0.85;
     private static final float STRIKE_DAMAGE = 4;
+    private static final int AIM_SAMPLES = 32;
+    private static final float AIM_DAMAGE = 1;
     private static final double ORGAN_SHARE = 0.6;
     private static final long NUMB_MILLIS = 6_000;
     private static final double NUMB_PEAK = 0.3;
@@ -869,6 +872,47 @@ public final class DamageGameTest implements BodyHealthHost {
         target.hurt(aimSource, STRIKE_DAMAGE);
         context.assertTrue(body(target).revision() == 2, "aim/head 没有完成固定部位结算");
         context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void headNeckAimHitsOnlyThosePartsOfABoundTarget(GameTestHelper context) {
+        // 头颈瞄准连续命中已绑定的身体，每次落点都只能是头或颈。
+        var attacker = context.spawn(EntityTypes.COW, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var target = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        bindAimTarget(target);
+        var hits = new ArrayList<String>();
+        VanillaDamageFabric.registerDamageObserver(event -> {
+            if (event.target() == target) {
+                hits.add(event.input().hit().orElseThrow().getPartId());
+            }
+        });
+        DamageSource source = customSource(context, attacker, "head_neck_strike");
+        context.assertTrue(VanillaDamageTypeTags.aim(source).orElseThrow().equals("head_neck"),
+                "aim/head_neck 标签没有解析为头颈组");
+        for (int sample = 0; sample < AIM_SAMPLES; sample++) {
+            target.invulnerableTime = 0;
+            target.hurtServer(context.getLevel(), source, AIM_DAMAGE);
+        }
+        context.assertTrue(hits.size() == AIM_SAMPLES, "头颈伤害没有逐次提交：" + hits);
+        context.assertTrue(hits.stream().allMatch(part -> part.equals("head") || part.equals("neck")),
+                "头颈瞄准落到了其他部位：" + hits);
+        context.succeed();
+    }
+
+    private static void bindAimTarget(LivingEntity entity) {
+        // 三部位身体留一个胸部作对照，所有部位都有足够 HP 接受重复选点。
+        var parts = List.of("head", "neck", "chest").stream()
+                .map(id -> new Anatomy.PartDefinition(new Anatomy.PartId(id), id, MUSCLE_HP))
+                .toList();
+        var structure = new BodyStructure(parts, List.of(), List.of(), List.of(), List.of());
+        var states = parts.stream().map(part -> new AnatomyState.Part(part.id(), MUSCLE_HP)).toList();
+        var template = new BodyTemplate.Reference(new DefinitionId("human:adult"), 1);
+        var vitality = new VitalityState(0, MUSCLE_ENDURANCE, 0, false /* dead */);
+        var time = new TimeCursor(new DefinitionId("test:world"), "epoch", 0);
+        var snapshot = new BodySnapshot(BodySnapshot.CURRENT_SCHEMA_VERSION, new BodyId(entity.getStringUUID()),
+                template, structure, Realm.WANDERING_QI, states, List.of(), List.of(), List.of(), List.of(),
+                vitality, time, 0);
+        STORE.registerBody(snapshot);
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)

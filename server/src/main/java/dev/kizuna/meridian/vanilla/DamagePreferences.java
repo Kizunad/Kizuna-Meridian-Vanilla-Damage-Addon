@@ -23,6 +23,7 @@ public final class DamagePreferences {
     private static final double MAX_CONFIG_VALUE = 1000;
     private final double hpPerVanillaHp;
     private final Map<String, Map<String, List<String>>> anatomies;
+    private final Map<String, Map<String, List<String>>> aims;
     private final Map<String, Map<String, Double>> attackers;
     private final ArmorRules armor;
     private final boolean attackEffectsEnabled;
@@ -30,12 +31,13 @@ public final class DamagePreferences {
     private final MuscleRules muscle;
     private final StaggerRules stagger;
 
-    private DamagePreferences(double hpPerVanillaHp, Map<String, Map<String, List<String>>> anatomies,
+    private DamagePreferences(double hpPerVanillaHp, TargetGroups groups,
                               Map<String, Map<String, Double>> attackers, ArmorRules armor,
                               CombatSettings combat) {
         // 配置在启动时固定，实际选点仍按每次伤害时的身体模块与 HP 计算。
         this.hpPerVanillaHp = hpPerVanillaHp;
-        this.anatomies = Map.copyOf(anatomies);
+        this.anatomies = groups.anatomies();
+        this.aims = groups.aims();
         this.attackers = Map.copyOf(attackers);
         this.armor = armor;
         AttackSettings attack = combat.attack();
@@ -78,38 +80,54 @@ public final class DamagePreferences {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.SCALE);
         }
         var anatomies = parseAnatomies(config);
+        TomlTable aimTable = configTable(config, "aims", VanillaDamageErrors.AIMS);
+        var aims = parsePartTables(aimTable, PartGrouping.OVERLAPPING);
+        var groups = new TargetGroups(anatomies, aims);
         var attackers = parseAttackers(config);
         ArmorRules armor = ArmorRules.parse(configTable(config, "armor", VanillaDamageErrors.ARMOR_COVERAGE));
         AttackSettings attack = parseAttackSettings(config);
         MuscleRules muscle = MuscleRules.parse(configTable(config, "muscle", VanillaDamageErrors.MUSCLE));
         StaggerRules stagger = StaggerRules.parse(configTable(config, "stagger", VanillaDamageErrors.STAGGER));
         var combat = new CombatSettings(attack, muscle, stagger);
-        return new DamagePreferences(scale, anatomies, attackers, armor, combat);
+        return new DamagePreferences(scale, groups, attackers, armor, combat);
     }
 
     private static Map<String, Map<String, List<String>>> parseAnatomies(TomlTable config) {
         // 身体模板声明分组；同一部位只能属于一个组，改造新增的部位归 other。
-        var anatomies = new HashMap<String, Map<String, List<String>>>();
         Object anatomyValue = config.get("anatomies");
-        if (anatomyValue != null) {
-            if (!(anatomyValue instanceof TomlTable anatomyTable)) {
-                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ANATOMIES);
-            }
-            for (String templateId : anatomyTable.keySet()) {
-                if (!(anatomyTable.get(List.of(templateId)) instanceof TomlTable groups)) {
-                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_GROUPS + ": " + templateId);
-                }
-                anatomies.put(templateId, parsePartGroups(groups));
-            }
+        if (anatomyValue == null) {
+            return Map.of();
         }
-        return Map.copyOf(anatomies);
+        if (!(anatomyValue instanceof TomlTable anatomyTable)) {
+            throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ANATOMIES);
+        }
+        return parsePartTables(anatomyTable, PartGrouping.DISJOINT);
     }
 
-    private static Map<String, List<String>> parsePartGroups(TomlTable groups) {
-        // 跨组核对部位唯一性，保存配置顺序以保持随机选点行为。
+    private static Map<String, Map<String, List<String>>> parsePartTables(TomlTable templates,
+                                                                         PartGrouping grouping) {
+        // 偏好分组互斥，瞄准分组可以重叠；两者共用部位数组的结构校验。
+        var tables = new HashMap<String, Map<String, List<String>>>();
+        for (String templateId : templates.keySet()) {
+            if (!(templates.get(List.of(templateId)) instanceof TomlTable groups)) {
+                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_GROUPS + ": " + templateId);
+            }
+            tables.put(templateId, parsePartGroups(groups, grouping));
+        }
+        return Map.copyOf(tables);
+    }
+
+    private static Map<String, List<String>> parsePartGroups(TomlTable groups, PartGrouping grouping) {
+        // 偏好跨组核对唯一性，瞄准只在组内核对；保存组内部位顺序以保持随机选点行为。
         var partGroups = new LinkedHashMap<String, List<String>>();
-        var usedParts = new HashSet<String>();
+        var disjointParts = new HashSet<String>();
         for (String group : groups.keySet()) {
+            HashSet<String> usedParts;
+            if (grouping == PartGrouping.DISJOINT) {
+                usedParts = disjointParts;
+            } else {
+                usedParts = new HashSet<>();
+            }
             if (!(groups.get(List.of(group)) instanceof TomlArray entries)) {
                 throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_ARRAY + ": " + group);
             }
@@ -180,6 +198,9 @@ public final class DamagePreferences {
 
     private record AttackSettings(boolean enabled, double maxExtraRatio) { }
     private record CombatSettings(AttackSettings attack, MuscleRules muscle, StaggerRules stagger) { }
+    private record TargetGroups(Map<String, Map<String, List<String>>> anatomies,
+                                Map<String, Map<String, List<String>>> aims) { }
+    private enum PartGrouping { DISJOINT, OVERLAPPING }
 
     private static TomlTable configTable(TomlTable config, String key, String error) {
         // 旧配置缺少新增节时只读取默认值，不重写服主已有文件。
@@ -295,15 +316,17 @@ public final class DamagePreferences {
         if (aimGroup.isEmpty()) {
             return actualParts;
         }
-        Map<String, List<String>> anatomy = anatomies.get(body.getTemplate().getId());
-        if (anatomy == null) {
-            return List.of();
-        }
-        List<String> aimedParts = anatomy.get(aimGroup.get());
-        if (aimedParts == null) {
-            return List.of();
-        }
+        List<String> aimedParts = aimedParts(body.getTemplate().getId(), aimGroup.get());
         return aimedParts.stream().filter(actualParts::contains).toList();
+    }
+
+    private List<String> aimedParts(String templateId, String aimGroup) {
+        // 独立瞄准表优先；未声明的组仍沿用原有偏好分组。
+        List<String> explicitParts = aims.getOrDefault(templateId, Map.of()).get(aimGroup);
+        if (explicitParts != null) {
+            return explicitParts;
+        }
+        return anatomies.getOrDefault(templateId, Map.of()).getOrDefault(aimGroup, List.of());
     }
 
     public Optional<HealthTarget> select(BodySnapshot body, String attackerId, double roll) {
