@@ -296,6 +296,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     @Override
     public void onInitialize() {
         // 服务入口是可信进程内协议，不为客户端开放任意伤害网络包。
+        VanillaAfflictions.register();
         var hosts = FabricLoader.getInstance().getEntrypoints("meridian_health_host", BodyHealthHost.class);
         preferences = DamagePreferences.load(FabricLoader.getInstance().getConfigDir()
                 .resolve("meridian-vanilla-damage.toml"));
@@ -720,7 +721,9 @@ public final class VanillaDamageFabric implements ModInitializer {
                         + " effect=" + status.getEffectId());
                 return;
             }
-            entity.addEffect(new MobEffectInstance(effect.get(), status.getDurationTicks(), status.getAmplifier()));
+            // 我们给的状态效果不出粒子，图标照常显示。
+            entity.addEffect(new MobEffectInstance(effect.get(), status.getDurationTicks(), status.getAmplifier(),
+                    false /* ambient */, false /* showParticles */, true /* showIcon */));
         } catch (RuntimeException failure) {
             // 协议已限制字符串和数值；注册表缺失仍只丢弃该可选状态，不影响已提交伤害。
             LOGGER.error(VanillaDamageErrors.ATTACK_EFFECT_STATUS + " target=" + entity.getStringUUID()

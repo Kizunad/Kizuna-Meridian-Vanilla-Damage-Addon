@@ -40,7 +40,6 @@ import org.slf4j.LoggerFactory;
 final class VanillaInfusions {
     static final TagKey<EntityType<?>> INFUSABLE_DIRECT = entityTag("infusable_direct");
     static final TagKey<EntityType<?>> INFUSION_VIA_OWNER = entityTag("infusion_via_owner");
-    private static final int UNFROZEN_MARGIN_TICKS = 1;
     private static final Logger LOGGER = LoggerFactory.getLogger("meridian_vanilla_damage");
     private static final Map<LivingEntity, MainHit> pending = new IdentityHashMap<>();
     private static final Set<LivingEntity> landing = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -75,14 +74,16 @@ final class VanillaInfusions {
     }
 
     static void discard(LivingEntity target) {
-        // 主击打死了目标，或目标在别处死了，这一记附伤不再落。
+        // 主击打死了目标，或目标在别处死了，这一记附伤不再落，身上的灼伤也不用再记。
         pending.remove(target);
+        VanillaAfflictions.forget(target);
     }
 
     static void clear() {
         // 世界停止后不保留实体引用。
         pending.clear();
         landing.clear();
+        VanillaAfflictions.clear();
     }
 
     static void land(LivingEntity target) {
@@ -154,12 +155,22 @@ final class VanillaInfusions {
         }
         Entity direct = Objects.requireNonNullElse(main.source().getDirectEntity(), owner);
         DamageSource source = new DamageSource(type.get(), direct, owner);
-        if (!deal(level, target, source, main, strike.damageHp())) {
+        Optional<String> partId = main.prepared().flatMap(PreparedHit::target).map(HealthTarget::getPartId);
+        if (!deal(level, target, source, main.prepared().isPresent(), partId, strike.damageHp())) {
             return;
         }
         strike.sound().ifPresent(sound -> TechniqueSounds.playAll(owner, target, List.of(sound)));
         if (target.isAlive()) {
-            applyExtras(target, direct, strike);
+            applyExtras(target, source, partId, strike);
+        }
+    }
+
+    /** 灼伤的一次掉血：打在记下的部位上（没身体的走原版受伤），不再触发附伤。 */
+    static void dealAffliction(ServerLevel level, LivingEntity target, DamageSource source, Optional<String> partId,
+                               double damageHp) {
+        // 灼伤只挂在附伤打进去了的目标上：有部位就是有身体的。
+        if (damageHp > 0 && target.isAlive()) {
+            deal(level, target, source, partId.isPresent(), partId, damageHp);
         }
     }
 
@@ -169,14 +180,13 @@ final class VanillaInfusions {
         return level.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).get(key);
     }
 
-    private static boolean deal(ServerLevel level, LivingEntity target, DamageSource source, MainHit main,
-                                double damageHp) {
+    private static boolean deal(ServerLevel level, LivingEntity target, DamageSource source, boolean bodied,
+                                Optional<String> partId, double damageHp) {
         // 附伤打出的伤害不再记附伤；有身体的打在主击同一部位，没身体的走一次原版受伤。
-        Optional<PreparedHit> prepared = main.prepared();
         landing.add(target);
         try {
-            if (prepared.isPresent()) {
-                return dealToPart(target, source, prepared.get(), damageHp);
+            if (bodied) {
+                return dealToPart(target, source, partId, damageHp);
             }
             return dealToVanilla(level, target, source, damageHp);
         } finally {
@@ -184,15 +194,14 @@ final class VanillaInfusions {
         }
     }
 
-    private static boolean dealToPart(LivingEntity target, DamageSource source, PreparedHit prepared,
+    private static boolean dealToPart(LivingEntity target, DamageSource source, Optional<String> partId,
                                       double damageHp) {
         // 不经原版受伤入口，不吃也不改无敌帧、不击退；部位已是 0 HP 时不提交，这一记附伤丢弃。
-        Optional<HealthTarget> part = prepared.target();
-        if (part.isEmpty()) {
+        if (partId.isEmpty()) {
             return false;
         }
         double bodyHp = VanillaDamageFabric.preferences().damageHp(damageHp);
-        var damage = new VanillaDamageFabric.DirectDamage(target, source, part.get().getPartId(), bodyHp);
+        var damage = new VanillaDamageFabric.DirectDamage(target, source, partId.get(), bodyHp);
         return VanillaDamageFabric.damageDirect(damage).isPresent();
     }
 
@@ -210,22 +219,14 @@ final class VanillaInfusions {
         }
     }
 
-    private static void applyExtras(LivingEntity target, Entity direct, InfusionStrike strike) {
-        // 着火取剩余与新值的较大者；冻结封在完全冻住前一刻，冻不了的跳过；追加击退从直接实体推开。
-        int igniteTicks = strike.igniteTicks();
-        if (igniteTicks > 0) {
-            target.igniteForTicks(igniteTicks);
-        }
-        int freezeTicks = strike.freezeTicks();
-        if (freezeTicks > 0 && target.canFreeze()) {
-            int frozen = target.getTicksFrozen();
-            int cap = target.getTicksRequiredToFreeze() - UNFROZEN_MARGIN_TICKS;
-            int capped = Math.min(frozen + freezeTicks, cap);
-            target.setTicksFrozen(Math.max(frozen, capped));
-        }
+    private static void applyExtras(LivingEntity target, DamageSource source, Optional<String> partId,
+                                    InfusionStrike strike) {
+        // 灼伤、寒侵是不出粒子的状态效果，叠加规则在 VanillaAfflictions；追加击退从直接实体推开。
+        VanillaAfflictions.burn(target, source, partId, strike.burnTicks(), strike.burnDamageHp());
+        VanillaAfflictions.chill(target, strike.chillTicks());
         double extraKnockback = strike.extraKnockback();
         if (extraKnockback > 0) {
-            pushAway(target, direct, extraKnockback);
+            pushAway(target, source.getDirectEntity(), extraKnockback);
         }
     }
 

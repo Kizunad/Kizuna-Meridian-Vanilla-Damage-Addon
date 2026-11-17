@@ -25,9 +25,12 @@ import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.SoundCue;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueProgress;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.Unit;
 import dev.kizuna.meridian.technique.server.TechniqueState;
+import dev.kizuna.meridian.vanilla.fabric.VanillaAfflictions;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.vanilla.fabric.mixin.HurtCooldownAccess;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
@@ -39,6 +42,8 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
@@ -50,6 +55,7 @@ import net.minecraft.world.entity.projectile.arrow.Arrow;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -89,10 +95,15 @@ public final class DamageInfusionGameTest {
     private static final float WEAKER_STRIKE = 3;
     private static final float LIGHT_STRIKE = 1;
     private static final float FANG_DAMAGE = 6;
-    private static final int IGNITE_TICKS = 20;
-    private static final int FREEZE_TICKS = 50;
-    private static final int NEARLY_FROZEN_TICKS = 120;
-    private static final int FREEZE_CAP_TICKS = 139;
+    private static final int BURN_TICKS = 20;
+    private static final double BURN_DAMAGE = 0.5;
+    private static final int REFRESHED_PULSES = 3;
+    private static final int CHILL_TICKS = 25;
+    private static final int CHILL_HITS_TO_CAP = 3;
+    private static final float STURDY_HEALTH = 40;
+    private static final int CHILL_WAIT_TICKS = 5;
+    private static final int OUTSIDE_TICKS = 100;
+    private static final int SETTLE_TICKS = 3;
     private static final double EXTRA_KNOCKBACK = 0.3;
     private static final double HALF_RESISTANCE = 0.5;
     private static final int COOLDOWN_TICKS = 20;
@@ -117,7 +128,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void bodiedTargetTakesInfusionOnTheSamePart(GameTestHelper context) {
         // 自定义近战类型带附伤：同一部位、本行伤害类型与致伤机制、记在主人名下；不击退、不改无敌帧。
-        Zombie owner = infusedOwner(context, heat().setIgniteTicks(IGNITE_TICKS).build(), PLATEAU_CLOCK_MILLIS);
+        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity target = bodiedTarget(context, 0, PART_HP);
         Vec3 velocity = target.getDeltaMovement();
         target.hurtServer(context.getLevel(), source(context, owner, STILL_STRIKE), STRIKE);
@@ -135,7 +146,10 @@ public final class DamageInfusionGameTest {
         context.assertTrue(target.getDeltaMovement().equals(velocity), "附伤不应击退");
         context.assertTrue(target.invulnerableTime == COOLDOWN_TICKS, "附伤改写了无敌帧");
         assertClose(context, ((HurtCooldownAccess) target).meridian$lastHurt(), STRIKE, "附伤改写了上次伤害");
-        context.assertTrue(target.getRemainingFireTicks() == IGNITE_TICKS, "灼火附伤没有点燃目标");
+        MobEffectInstance burn = target.getEffect(VanillaAfflictions.burnEffect());
+        context.assertTrue(burn != null && burn.getDuration() == BURN_TICKS, "灼火附伤没有给目标挂上灼伤");
+        context.assertTrue(!burn.isVisible() && burn.showIcon(), "灼伤要不出粒子、有图标");
+        context.assertTrue(target.getRemainingFireTicks() <= 0, "灼火附伤不该再把目标点着");
         context.succeed();
     }
 
@@ -175,24 +189,161 @@ public final class DamageInfusionGameTest {
     }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
-    public void infusionExtrasFreezeUpToTheCapAndPushAway(GameTestHelper context) {
-        // 冻结刻加上去但封在完全冻住前一刻，冻不了的跳过；追加击退从直接实体推开，只算水平。
-        Zombie coldOwner = infusedOwner(context, cold().build(), PLATEAU_CLOCK_MILLIS);
-        LivingEntity fresh = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
-        LivingEntity nearlyFrozen = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
-        nearlyFrozen.setTicksFrozen(NEARLY_FROZEN_TICKS);
-        LivingEntity immune = context.spawn(EntityTypes.STRAY, TARGET_X, SPAWN_Y, lane(2));
-        DamageSource coldStrike = coldOwner.damageSources().mobAttack(coldOwner);
-        fresh.hurtServer(context.getLevel(), coldStrike, STRIKE);
-        nearlyFrozen.hurtServer(context.getLevel(), coldStrike, STRIKE);
-        immune.hurtServer(context.getLevel(), coldStrike, STRIKE);
-        context.assertTrue(fresh.getTicksFrozen() == FREEZE_TICKS, "寒水附伤没有加冻结刻: " + fresh.getTicksFrozen());
-        context.assertTrue(nearlyFrozen.getTicksFrozen() == FREEZE_CAP_TICKS,
-                "冻结刻没有封在完全冻住前一刻: " + nearlyFrozen.getTicksFrozen());
-        context.assertTrue(immune.getTicksFrozen() == 0, "冻不了的生物也被加了冻结刻");
+    public void burnDealsItsTotalOverItsDurationOnTheStruckPart(GameTestHelper context) {
+        // 灼伤 20 tick 一共掉 1 HP，分两次打在主击那个部位上，用附伤的伤害类型、记在主人名下；烧完图标自己没。
+        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        LivingEntity target = bodiedTarget(context, 0, PART_HP);
+        target.hurtServer(context.getLevel(), source(context, owner, STILL_STRIKE), STRIKE);
+        double afterStrike = DamageGameTest.body(target).partStates().get(0).hp();
+        context.runAfterDelay(BURN_TICKS + SETTLE_TICKS, () -> {
+            List<VanillaDamageFabric.DamageEvent> pulses = events(target).subList(2, events(target).size());
+            context.assertTrue(pulses.size() == BURN_TICKS / VanillaAfflictions.BURN_PULSE_TICKS,
+                    "灼伤掉血的次数不对: " + pulses.size());
+            for (VanillaDamageFabric.DamageEvent pulse : pulses) {
+                context.assertTrue(pulse.source().is(damageType(HEAT)) && pulse.attacker() == owner,
+                        "灼伤没有用附伤的伤害类型，或者没记在主人名下");
+                context.assertTrue(pulse.input().hit().equals(events(target).get(0).input().hit()),
+                        "灼伤没有烧在主击那个部位");
+            }
+            assertClose(context, DamageGameTest.body(target).partStates().get(0).hp(), afterStrike - BURN_DAMAGE,
+                    "灼伤一共掉的血不是目录写的量");
+            context.assertTrue(!target.hasEffect(VanillaAfflictions.burnEffect()), "灼伤到时间没有消掉");
+            context.assertTrue(target.getRemainingFireTicks() <= 0, "灼伤期间目标被点着了");
+            context.succeed();
+        });
+    }
 
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void burnOnABodilessTargetGoesThroughVanillaHurt(GameTestHelper context) {
+        // 没身体的牛：灼伤走原版受伤，20 tick 掉 1 HP，不被主击留下的无敌帧挡掉。
+        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        LivingEntity cow = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
+        cow.hurtServer(context.getLevel(), owner.damageSources().mobAttack(owner), STRIKE);
+        float afterStrike = cow.getHealth();
+        context.runAfterDelay(BURN_TICKS + SETTLE_TICKS, () -> {
+            assertClose(context, cow.getHealth(), afterStrike - BURN_DAMAGE, "没身体的目标灼伤掉的血不对");
+            context.assertTrue(cow.getRemainingFireTicks() <= 0, "没身体的目标被点着了");
+            context.succeed();
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void burnRefreshesWithoutStackingOrExtraDamage(GameTestHelper context) {
+        // 灼伤中再挨一下：时长回到 20，不叠成 30；掉血按固定节拍，两次灼伤连成 30 tick，一共三次。
+        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        LivingEntity target = bodiedTarget(context, 0, PART_HP);
+        DamageSource strike = source(context, owner, STILL_STRIKE);
+        target.hurtServer(context.getLevel(), strike, STRIKE);
+        context.runAfterDelay(VanillaAfflictions.BURN_PULSE_TICKS, () -> {
+            target.invulnerableTime = 0;
+            target.hurtServer(context.getLevel(), strike, STRIKE);
+            int duration = target.getEffect(VanillaAfflictions.burnEffect()).getDuration();
+            context.assertTrue(duration == BURN_TICKS, "再挨一下，灼伤的时长应该回到 20: " + duration);
+        });
+        context.runAfterDelay(VanillaAfflictions.BURN_PULSE_TICKS + BURN_TICKS + SETTLE_TICKS, () -> {
+            double pulseDamage = BURN_DAMAGE * VanillaAfflictions.BURN_PULSE_TICKS / BURN_TICKS;
+            long pulses = events(target).stream()
+                    .filter(event -> event.source().is(damageType(HEAT)))
+                    .filter(event -> Math.abs(event.input().rawDamage() - pulseDamage) < EPSILON)
+                    .count();
+            context.assertTrue(pulses == REFRESHED_PULSES, "两次灼伤连成 30 tick，应该掉三次血: " + pulses);
+            context.succeed();
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void burnSkipsFireproofTargetsAndGoesOutInWater(GameTestHelper context) {
+        // 点不着的（烈焰人）和喝了抗火药水的不挨灼伤；泡在水里的下一 tick 就灭，一下也烧不着。
+        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        DamageSource strike = owner.damageSources().mobAttack(owner);
+        LivingEntity blaze = context.spawn(EntityTypes.BLAZE, TARGET_X, SPAWN_Y, 0);
+        LivingEntity potioned = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
+        potioned.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, DEFAULT_TIMEOUT));
+        // 一格水，四面用玻璃围住，不流到别的样本脚下。
+        BlockPos pool = new BlockPos(TARGET_X, SPAWN_Y, lane(2));
+        for (Direction side : Direction.Plane.HORIZONTAL) {
+            context.setBlock(pool.relative(side), Blocks.GLASS);
+        }
+        context.setBlock(pool, Blocks.WATER);
+        LivingEntity soaked = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(2));
+        context.runAfterDelay(SETTLE_TICKS, () -> {
+            blaze.hurtServer(context.getLevel(), strike, STRIKE);
+            potioned.hurtServer(context.getLevel(), strike, STRIKE);
+            soaked.hurtServer(context.getLevel(), strike, STRIKE);
+            float soakedHealth = soaked.getHealth();
+            context.assertTrue(!blaze.hasEffect(VanillaAfflictions.burnEffect()), "点不着的生物挨了灼伤");
+            context.assertTrue(!potioned.hasEffect(VanillaAfflictions.burnEffect()), "喝了抗火药水的挨了灼伤");
+            context.runAfterDelay(BURN_TICKS + SETTLE_TICKS, () -> {
+                context.assertTrue(!soaked.hasEffect(VanillaAfflictions.burnEffect()), "泡在水里灼伤没有灭");
+                assertClose(context, soaked.getHealth(), soakedHealth, "泡在水里还是被灼伤掉了血");
+                context.succeed();
+            });
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void chillStacksToTheCapSlowsByWhatIsLeftAndWearsOff(GameTestHelper context) {
+        // 寒侵每中一下加 25 tick，封顶 69；减速按剩余时长算（加法），不动冻结刻；冻不了的不挨；到时间修正摘干净。
+        Zombie owner = infusedOwner(context, cold().build(), PLATEAU_CLOCK_MILLIS);
+        DamageSource strike = source(context, owner, STILL_STRIKE);
+        LivingEntity once = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
+        LivingEntity thrice = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
+        // 牛只有 10 HP，三下主击加附伤会打死，打死了附带不落：这一头加厚到挨得住。
+        thrice.getAttribute(Attributes.MAX_HEALTH).setBaseValue(STURDY_HEALTH);
+        thrice.setHealth(STURDY_HEALTH);
+        LivingEntity immune = context.spawn(EntityTypes.STRAY, TARGET_X, SPAWN_Y, lane(2));
+        double baseSpeed = once.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        once.hurtServer(context.getLevel(), strike, STRIKE);
+        for (int hit = 0; hit < CHILL_HITS_TO_CAP; hit++) {
+            // 连着打三下：清掉无敌帧，免得后两下主击被挡、附伤跟着不落。
+            thrice.invulnerableTime = 0;
+            thrice.hurtServer(context.getLevel(), strike, STRIKE);
+        }
+        immune.hurtServer(context.getLevel(), strike, STRIKE);
+        MobEffectInstance chill = once.getEffect(VanillaAfflictions.chillEffect());
+        context.assertTrue(chill != null && chill.getDuration() == CHILL_TICKS, "寒水附伤没有挂上一截寒侵");
+        context.assertTrue(!chill.isVisible() && chill.showIcon(), "寒侵要不出粒子、有图标");
+        context.assertTrue(thrice.getEffect(VanillaAfflictions.chillEffect()).getDuration()
+                == VanillaAfflictions.CHILL_CAP_TICKS, "寒侵没有封顶在 69 tick");
+        context.assertTrue(!immune.hasEffect(VanillaAfflictions.chillEffect()), "冻不了的生物挨了寒侵");
+        context.assertTrue(once.getTicksFrozen() == 0 && thrice.getTicksFrozen() == 0, "寒侵不该再动冻结刻");
+        assertClose(context, once.getAttributeValue(Attributes.MOVEMENT_SPEED),
+                baseSpeed - slow(CHILL_TICKS), "一下寒侵的减速不对");
+        assertClose(context, thrice.getAttributeValue(Attributes.MOVEMENT_SPEED),
+                baseSpeed - slow(VanillaAfflictions.CHILL_CAP_TICKS), "封顶寒侵的减速不对");
+        context.runAfterDelay(CHILL_WAIT_TICKS, () -> {
+            int left = once.getEffect(VanillaAfflictions.chillEffect()).getDuration();
+            context.assertTrue(left < CHILL_TICKS, "寒侵没有在倒计时");
+            // 减速在效果这一 tick 走之前按当时的剩余时长写，读到的剩余已经少了 1。
+            assertClose(context, once.getAttributeValue(Attributes.MOVEMENT_SPEED), baseSpeed - slow(left + 1),
+                    "寒侵的减速没有跟着剩余时长变轻");
+        });
+        context.runAfterDelay(CHILL_TICKS + SETTLE_TICKS, () -> {
+            context.assertTrue(!once.hasEffect(VanillaAfflictions.chillEffect()), "寒侵到时间没有消掉");
+            assertClose(context, once.getAttributeValue(Attributes.MOVEMENT_SPEED), baseSpeed, "寒侵消掉以后移速没有复原");
+            context.succeed();
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void afflictionsGivenFromOutsideStillShowNoParticles(GameTestHelper context) {
+        // 指令 /effect give 给的状态默认带粒子：从外面这样给的灼伤、寒侵也照样不出粒子、有图标。
+        LivingEntity cow = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
+        for (var effect : List.of(VanillaAfflictions.burnEffect(), VanillaAfflictions.chillEffect())) {
+            cow.addEffect(new MobEffectInstance(effect, OUTSIDE_TICKS, 0, false /* ambient */,
+                    true /* showParticles */, true /* showIcon */));
+            MobEffectInstance given = cow.getEffect(effect);
+            context.assertTrue(given != null && !given.isVisible() && given.showIcon(),
+                    "从外面带着粒子给的 " + effect.getRegisteredName() + " 也要不出粒子、有图标");
+        }
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void earthInfusionPushesAwayFromTheDirectEntity(GameTestHelper context) {
+        // 追加击退从直接实体推开，只算水平。
         Zombie earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
-        LivingEntity pushed = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(3));
+        LivingEntity pushed = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         pushed.hurtServer(context.getLevel(), source(context, earthOwner, STILL_STRIKE), STRIKE);
         Vec3 horizontal = pushed.getDeltaMovement().multiply(1, 0, 1);
         Vec3 away = pushed.position().subtract(earthOwner.position()).multiply(1, 0, 1);
@@ -429,9 +580,21 @@ public final class DamageInfusionGameTest {
         return infusion(HEAT);
     }
 
+    private static ElementalInfusion.Builder burning() {
+        // 灼火样本带灼伤：20 tick 一共掉 1 HP。
+        return heat().setBurnTicks(BURN_TICKS).setBurnDamage(Quantity.newBuilder()
+                .setValue(BURN_DAMAGE).setUnit(Unit.DAMAGE_POINT));
+    }
+
     private static ElementalInfusion.Builder cold() {
-        // 寒水样本：每记附伤加 50 冻结刻。
-        return infusion(COLD).setFreezeTicks(FREEZE_TICKS);
+        // 寒水样本：每记附伤加 25 tick 寒侵。
+        return infusion(COLD).setChillTicks(CHILL_TICKS);
+    }
+
+    private static double slow(int remainingTicks) {
+        // 寒侵减掉的移速：剩 70 tick 以上减 0.05，剩得少按比例。
+        return VanillaAfflictions.CHILL_FULL_SLOW * Math.min(remainingTicks, VanillaAfflictions.CHILL_FULL_TICKS)
+                / VanillaAfflictions.CHILL_FULL_TICKS;
     }
 
     private static ElementalInfusion.Builder earth() {

@@ -175,6 +175,8 @@ public final class DamageGameTest implements BodyHealthHost {
                     "附加伤害必须进入同一身体事务");
             context.assertTrue(target.hasEffect(MobEffects.STRENGTH),
                     "攻击附效状态应在 hurt 返回后施加");
+            context.assertTrue(!target.getEffect(MobEffects.STRENGTH).isVisible()
+                    && target.getEffect(MobEffects.STRENGTH).showIcon(), "攻击附效给的状态要不出粒子、有图标");
 
             target.invulnerableTime = 0;
             before = target.getHealth();

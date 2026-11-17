@@ -12,5 +12,7 @@
   "tooltip.meridian_vanilla_damage.armor.chest": "护住：胸、腹、两上臂",
   "tooltip.meridian_vanilla_damage.armor.legs": "护住：骨盆、大腿、小腿",
   "tooltip.meridian_vanilla_damage.armor.feet": "护住：两足",
-  "message.meridian_vanilla_damage.first_injury": "红心是全身各处血量合起来的比例：掉到两颗以下，或者头被打空，人就死了。各处伤得怎样，按 %s 打开工作台，在「检视」页点身体看。"
+  "message.meridian_vanilla_damage.first_injury": "红心是全身各处血量合起来的比例：掉到两颗以下，或者头被打空，人就死了。各处伤得怎样，按 %s 打开工作台，在「检视」页点身体看。",
+  "effect.meridian_vanilla_damage.burn": "灼伤",
+  "effect.meridian_vanilla_damage.chill": "寒侵"
 }
