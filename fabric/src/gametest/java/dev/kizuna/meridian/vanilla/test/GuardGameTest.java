@@ -7,10 +7,12 @@ import dev.kizuna.meridian.technique.server.GuardState;
 import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.Unit;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -20,7 +22,6 @@ import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
@@ -42,6 +43,8 @@ public final class GuardGameTest {
     private static final long RECOVERY = 300;
     private static final float DOSE = 10;
     private static final double GUARDED_DOSE = 7;
+    private static final double WEAPON_SHOCK = 0.7;
+    private static final int WEAPON_WEAR = 7;
     private static final double LOW_HP = 3;
     private static final double SPILL_MULTIPLIER = 0.7;
     private static final double EPSILON = 1e-5;
@@ -62,6 +65,101 @@ public final class GuardGameTest {
     private static final long STAGGER_LIMIT = 1000;
     private static final int COMPLETE_RESISTANCE = 4;
     private static final int COMPLETE_ABSORPTION = 13;
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void swordTakesWearAndForearmTakesShockOnBothPaths(GameTestHelper context) {
+        for (HitPath path : HitPath.values()) {
+            try (var scene = guarding(context, ARM_HP, ARM_HP)) {
+                var sword = new ItemStack(Items.IRON_SWORD);
+                scene.target().setItemSlot(EquipmentSlot.MAINHAND, sword);
+                var events = observe(scene);
+                path.hit(scene);
+                context.assertTrue(sword.getDamageValue() == WEAPON_WEAR, "铁剑应承担七点耐久");
+                close(context, hp(scene.target(), LEFT), ARM_HP - WEAPON_SHOCK, "前臂应承担一成震劲");
+                close(context, hp(scene.target(), "head"), PART_HP, "持剑挡下的原部位不掉血");
+                scene.target().setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
+                context.assertTrue(guardedInput(context, events).weaponGuarded(), "换手后仍通知判定当刻的兵器挡");
+            }
+        }
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void emptyHandAndStickKeepFullArmDamage(GameTestHelper context) {
+        for (var mainHand : List.of(ItemStack.EMPTY, new ItemStack(Items.STICK))) {
+            try (var scene = guarding(context, ARM_HP, ARM_HP)) {
+                var offhand = new ItemStack(Items.IRON_SWORD);
+                scene.target().setItemSlot(EquipmentSlot.MAINHAND, mainHand);
+                scene.target().setItemSlot(EquipmentSlot.OFFHAND, offhand);
+                var events = observe(scene);
+                scene.normal();
+                close(context, hp(scene.target(), LEFT), ARM_HP - GUARDED_DOSE, "空手和木棍全落前臂");
+                context.assertTrue(mainHand.getDamageValue() == 0 && offhand.getDamageValue() == 0, "两手物品均无磨损");
+                context.assertTrue(!guardedInput(context, events).weaponGuarded(), "前臂挡的兵器标记为假");
+            }
+        }
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void exhaustedSwordBreaksAndEntireHitFallsOnArm(GameTestHelper context) {
+        for (int remaining : List.of(1, WEAPON_WEAR)) {
+            try (var scene = guarding(context, ARM_HP, ARM_HP)) {
+                var sword = new ItemStack(Items.IRON_SWORD);
+                sword.setDamageValue(sword.getMaxDamage() - remaining);
+                scene.target().setItemSlot(EquipmentSlot.MAINHAND, sword);
+                var events = observe(scene);
+                scene.normal();
+                context.assertTrue(scene.target().getMainHandItem().isEmpty(), "耗尽的剑应在这一击碎掉");
+                close(context, hp(scene.target(), LEFT), ARM_HP - GUARDED_DOSE, "碎剑这一击全落前臂");
+                context.assertTrue(!guardedInput(context, events).weaponGuarded(), "碎剑时报告前臂承接");
+            }
+        }
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void unbreakableSwordGuardsWithoutWear(GameTestHelper context) {
+        try (var scene = guarding(context, ARM_HP, ARM_HP)) {
+            var sword = new ItemStack(Items.IRON_SWORD);
+            sword.set(DataComponents.UNBREAKABLE, Unit.INSTANCE);
+            scene.target().setItemSlot(EquipmentSlot.MAINHAND, sword);
+            var events = observe(scene);
+            scene.direct("head");
+            close(context, hp(scene.target(), LEFT), ARM_HP - WEAPON_SHOCK, "不可损剑也只传一成震劲");
+            context.assertTrue(sword.getDamageValue() == 0, "不可损剑无磨损");
+            context.assertTrue(guardedInput(context, events).weaponGuarded(), "不可损剑报告兵器挡");
+        }
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void mobGuardsWithItsOwnAxe(GameTestHelper context) {
+        var defender = context.spawn(EntityTypes.ZOMBIE, ORIGIN, ORIGIN, ORIGIN);
+        defender.setNoAi(true /* noAi */);
+        try (var scene = scene(context, defender, ARM_HP, ARM_HP)) {
+            startGuard(context, scene, GUARD_ID);
+            var axe = new ItemStack(Items.IRON_AXE);
+            var attackerSword = new ItemStack(Items.IRON_SWORD);
+            defender.setItemSlot(EquipmentSlot.MAINHAND, axe);
+            scene.attacker().setItemSlot(EquipmentSlot.MAINHAND, attackerSword);
+            var events = observe(scene);
+            scene.direct("head");
+            close(context, hp(defender, LEFT), ARM_HP - WEAPON_SHOCK, "生物持斧只吃震劲");
+            context.assertTrue(axe.getDamageValue() == WEAPON_WEAR, "磨损守方主手斧");
+            context.assertTrue(attackerSword.getDamageValue() == 0, "不磨损攻击方兵器");
+            context.assertTrue(guardedInput(context, events).weaponGuarded(), "生物持斧也报告兵器挡");
+        }
+        context.succeed();
+    }
+
+    private static VanillaDamageFabric.DamageInput guardedInput(GameTestHelper context,
+                                                               List<VanillaDamageFabric.DamageEvent> events) {
+        context.assertTrue(events.size() == 1, "挡住的一击应只通知一次");
+        var input = events.getFirst().input();
+        context.assertTrue(input.guarded().isPresent(), "应保留守的身份");
+        return input;
+    }
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void guardNotificationFreezesIdentityOnBothPaths(GameTestHelper context) {
@@ -120,11 +218,15 @@ public final class GuardGameTest {
         // 零倍率、原版抗性与局部黄心完全吸收都保留挡住事实，不增加健康提交。
         for (HitPath path : HitPath.values()) {
             try (var scene = guarding(context, ARM_HP, ARM_HP, CUSTOM_GUARD_ID)) {
+                var sword = new ItemStack(Items.IRON_SWORD);
+                scene.target().setItemSlot(EquipmentSlot.MAINHAND, sword);
                 var events = observe(scene);
                 long before = body(scene.target()).revision();
                 DamageSource source = source(scene.target(), "head_neck_strike", scene.attacker());
                 path.hit(scene, source);
                 assertAbsorbedNotification(context, scene, events);
+                context.assertTrue(sword.getDamageValue() == 1, "零倍率的兵器挡只扣一次最低耐久");
+                context.assertTrue(events.getFirst().input().weaponGuarded(), "零倍率仍报告兵器挡");
                 context.assertTrue(body(scene.target()).revision() == before, "零倍率不提交健康事务");
             }
             try (var scene = guarding(context, ARM_HP, ARM_HP)) {
@@ -412,6 +514,7 @@ public final class GuardGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void noArmsOrNoConfiguredTemplateCannotStart(GameTestHelper context) {
         try (var scene = scene(context, 0, 0)) {
+            scene.target().setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
             var outcome = TechniqueFabric.service().cast(scene.target().getUUID(), request(scene.target()));
             context.assertTrue(!successful(outcome), "双臂归零不能起式");
             context.assertTrue(outcome.toString().contains(VanillaDamageErrors.GUARD_UNAVAILABLE), "返回文案键占位");
@@ -427,9 +530,12 @@ public final class GuardGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void penetratingHitKeepsOriginalPartDoseStaggerAndGuard(GameTestHelper context) {
         try (var scene = guarding(context, ARM_HP, ARM_HP)) {
+            var sword = new ItemStack(Items.IRON_SWORD);
+            scene.target().setItemSlot(EquipmentSlot.MAINHAND, sword);
             var extras = new VanillaDamageFabric.DirectExtras(OptionalDouble.of(ORGAN_SHARE), HALF_ARMOR, List.of());
             damage(scene.target(), scene.source(), "chest", extras);
             assertUnblocked(context, scene, "chest");
+            context.assertTrue(sword.getDamageValue() == 0, "透劲不磨损守方兵器");
             context.assertTrue(TechniqueFabric.service().activeGuard(scene.target().getUUID()).isPresent(),
                     "透劲整下绕过，不撤守");
         }
@@ -506,18 +612,26 @@ public final class GuardGameTest {
 
     private static Scene guarding(GameTestHelper context, double leftHp, double rightHp, String technique) {
         Scene scene = scene(context, leftHp, rightHp);
+        startGuard(context, scene, technique);
+        return scene;
+    }
+
+    private static void startGuard(GameTestHelper context, Scene scene, String technique) {
         var outcome = TechniqueFabric.service().cast(scene.target().getUUID(), request(scene.target(), technique));
         context.assertTrue(successful(outcome), "守式应成功起手：" + outcome);
         advance(scene.target(), WARMUP);
         TechniqueFabric.service().tick();
         context.assertTrue(TechniqueFabric.service().activeGuard(scene.target().getUUID()).isPresent(), "已进入守段");
-        return scene;
     }
 
     private static Scene scene(GameTestHelper context, double leftHp, double rightHp) {
         var target = context.makeMockPlayer(GameType.SURVIVAL);
         Vec3 position = context.absoluteVec(new Vec3(ORIGIN, ORIGIN, ORIGIN));
         target.setPos(position.add(target.getId() * SPACING, 0, 0));
+        return scene(context, target, leftHp, rightHp);
+    }
+
+    private static Scene scene(GameTestHelper context, LivingEntity target, double leftHp, double rightHp) {
         target.setYRot(0);
         bind(target, leftHp, rightHp);
         var attacker = context.spawn(EntityTypes.ZOMBIE, ORIGIN, ORIGIN, ORIGIN);
@@ -582,7 +696,7 @@ public final class GuardGameTest {
         return new DamageSource(type, entities[0], entities[1]);
     }
 
-    private static HealthResult damage(Player target, DamageSource source, String part,
+    private static HealthResult damage(LivingEntity target, DamageSource source, String part,
                                         VanillaDamageFabric.DirectExtras extras) {
         var damage = new VanillaDamageFabric.DirectDamage(target, source, part, DOSE, extras);
         return VanillaDamageFabric.damageDirect(damage).orElseThrow().health();
@@ -593,7 +707,7 @@ public final class GuardGameTest {
                 message + ": actual=" + actual + ", expected=" + expected);
     }
 
-    private record Scene(Player target, LivingEntity attacker) implements AutoCloseable {
+    private record Scene(LivingEntity target, LivingEntity attacker) implements AutoCloseable {
         DamageSource source() {
             return GuardGameTest.source(target, "guard_head", attacker);
         }

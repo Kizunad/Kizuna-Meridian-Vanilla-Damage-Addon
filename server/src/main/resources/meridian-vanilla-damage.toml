@@ -40,6 +40,11 @@ legs = ["left_thigh", "left_lower_leg", "left_foot", "right_thigh", "right_lower
 parts = ["left_forearm", "right_forearm"]
 covers = ["head", "torso"]
 
+# 守式减伤后落到前臂的比例；其余部分按每点伤害的耐久代价由主手兵器承接。
+[guard_weapon]
+forearm_share = 0.1
+durability_per_damage = 1.0
+
 # 只供伤害类型的瞄准标签使用，不参与攻击者偏好；部位可与 anatomies 及其他瞄准组重叠。
 [aims."human:adult"]
 head_neck = ["head", "neck"]

@@ -19,12 +19,14 @@ public final class GuardRules {
     private static final double DIRECTION_EPSILON = 1e-12;
     private static final double ANGLE_EPSILON = 1e-8;
     private final Map<String, Profile> profiles;
+    private final Weapon weapon;
 
-    private GuardRules(Map<String, Profile> profiles) {
+    private GuardRules(Map<String, Profile> profiles, Weapon weapon) {
         this.profiles = Map.copyOf(profiles);
+        this.weapon = weapon;
     }
 
-    static GuardRules parse(TomlTable table, Map<String, Map<String, List<String>>> anatomies) {
+    static GuardRules parse(TomlTable table, Map<String, Map<String, List<String>>> anatomies, Weapon weapon) {
         var profiles = new HashMap<String, Profile>();
         for (String templateId : table.keySet()) {
             if (!(table.get(List.of(templateId)) instanceof TomlTable profile)) {
@@ -41,7 +43,33 @@ public final class GuardRules {
             }
             profiles.put(templateId, new Profile(parts, Set.copyOf(covers)));
         }
-        return new GuardRules(profiles);
+        return new GuardRules(profiles, weapon);
+    }
+
+    public Weapon weapon() {
+        return weapon;
+    }
+
+    public record Weapon(double forearmShare, double durabilityPerDamage) {
+        static Weapon parse(TomlTable table) {
+            // 两项须同时声明；震劲可为零，耐久代价必须为正。
+            if (!(table.get("forearm_share") instanceof Number share)
+                    || !(table.get("durability_per_damage") instanceof Number rate)) {
+                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.GUARD_WEAPON);
+            }
+            double arm = share.doubleValue();
+            double wear = rate.doubleValue();
+            if (!Double.isFinite(arm) || arm < 0 || arm > 1 || !Double.isFinite(wear) || wear <= 0) {
+                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.GUARD_WEAPON);
+            }
+            return new Weapon(arm, wear);
+        }
+
+        public int durabilityCost(double guardedDamage) {
+            // 按兵器承担的那一份向上取整，每次挡中至少磨损一点。
+            double cost = guardedDamage * (1 - forearmShare) * durabilityPerDamage;
+            return Math.max(1, (int) Math.ceil(cost));
+        }
     }
 
     private static List<String> strings(TomlTable table, String key) {

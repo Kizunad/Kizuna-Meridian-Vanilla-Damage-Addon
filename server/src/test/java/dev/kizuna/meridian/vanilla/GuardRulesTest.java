@@ -41,6 +41,9 @@ public final class GuardRulesTest {
     private static final double HEAD_NECK_ROLL = 0.5;
     private static final double WORLD_EDGE = 30_000_000;
     private static final double ATTACK_DISTANCE = 2;
+    private static final double DEFAULT_SHOCK_SHARE = 0.1;
+    private static final double SMALL_HIT = 1.25;
+    private static final int CUSTOM_WEAR = 3;
     private static final GuardRules.Direction FORWARD = new GuardRules.Direction(0, 1);
 
     @Rule
@@ -115,6 +118,36 @@ public final class GuardRulesTest {
     }
 
     @Test
+    public void missingWeaponTableLoadsDefaultsWithoutRewriting() throws IOException {
+        var path = temporary.newFile("guard-before-weapons.toml").toPath();
+        String legacy = configuration().replace(defaultWeapon(), "");
+        assertFalse(legacy.contains("[guard_weapon]"));
+        byte[] before = legacy.getBytes(StandardCharsets.UTF_8);
+        Files.write(path, before);
+        var weapon = DamagePreferences.load(path).guard().weapon();
+        assertEquals(DEFAULT_SHOCK_SHARE, weapon.forearmShare(), 0);
+        assertEquals(1, weapon.durabilityPerDamage(), 0);
+        assertArrayEquals(before, Files.readAllBytes(path));
+    }
+
+    @Test
+    public void configuredCostRoundsUpAndAllowsZeroShock() throws IOException {
+        String config = configuration();
+        String custom = "[guard_weapon]\nforearm_share = 0\ndurability_per_damage = 2\n";
+        var weapon = DamagePreferences.parse(config.replace(defaultWeapon(), custom)).guard().weapon();
+        assertEquals(0, weapon.forearmShare(), 0);
+        assertEquals(CUSTOM_WEAR, weapon.durabilityCost(SMALL_HIT));
+        assertEquals(1, weapon.durabilityCost(0));
+        for (String invalid : List.of("forearm_share = -1\ndurability_per_damage = 1",
+                "forearm_share = 1.1\ndurability_per_damage = 1", "forearm_share = 0\ndurability_per_damage = 0",
+                "forearm_share = 0\ndurability_per_damage = nan", "forearm_share = 0")) {
+            String replacement = "[guard_weapon]\n" + invalid + "\n";
+            assertThrows(IllegalArgumentException.class,
+                    () -> DamagePreferences.parse(config.replace(defaultWeapon(), replacement)));
+        }
+    }
+
+    @Test
     public void explicitConfigurationWinsAndEmptyTableDisablesGuard() throws IOException {
         String reversed = defaultGuard().replace("[\"left_forearm\", \"right_forearm\"]",
                 "[\"right_forearm\", \"left_forearm\"]");
@@ -175,6 +208,14 @@ public final class GuardRulesTest {
                 [guard."human:adult"]
                 parts = ["left_forearm", "right_forearm"]
                 covers = ["head", "torso"]
+                """;
+    }
+
+    private static String defaultWeapon() {
+        return """
+                [guard_weapon]
+                forearm_share = 0.1
+                durability_per_damage = 1.0
                 """;
     }
 

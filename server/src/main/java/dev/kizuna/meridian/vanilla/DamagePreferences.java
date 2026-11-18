@@ -241,12 +241,13 @@ public final class DamagePreferences {
 
     private static GuardRules parseGuard(TomlTable config, Map<String, Map<String, List<String>>> anatomies) {
         TomlTable guardTable = configTable(config, "guard", VanillaDamageErrors.GUARD);
+        var weapon = GuardRules.Weapon.parse(configTable(config, "guard_weapon", VanillaDamageErrors.GUARD_WEAPON));
         if (config.get("guard") != null) {
-            return GuardRules.parse(guardTable, anatomies);
+            return GuardRules.parse(guardTable, anatomies, weapon);
         }
         // 随包表的引用在随包解剖表中校验；旧文件的自定义分组仍在每击覆盖判断时生效。
         TomlTable defaultAnatomies = configTable(Toml.parse(""), "anatomies", VanillaDamageErrors.ANATOMIES);
-        return GuardRules.parse(guardTable, parsePartTables(defaultAnatomies, PartGrouping.DISJOINT));
+        return GuardRules.parse(guardTable, parsePartTables(defaultAnatomies, PartGrouping.DISJOINT), weapon);
     }
 
     public GuardRules guard() {

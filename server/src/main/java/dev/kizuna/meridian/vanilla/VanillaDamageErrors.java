@@ -4,6 +4,7 @@ import java.io.IOException;
 
 /** 原版伤害适配的诊断；核心失败仍使用 Protobuf 失败码。 */
 public final class VanillaDamageErrors {
+    public static final String GUARD_WEAPON = "兵器格挡配置无效";
     public static final String GUARD = "guard 必须按模板声明非空、不重复且属于解剖表的 parts 和 covers";
     public static final String GUARD_UNAVAILABLE = "meridian_vanilla_damage.guard.unavailable";
     public static final String GUARD_END = "挡位毁尽后的收势请求被拒绝";

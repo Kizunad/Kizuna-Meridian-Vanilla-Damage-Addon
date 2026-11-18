@@ -83,9 +83,30 @@ public final class VanillaDamageFabric implements ModInitializer {
     public record DamageEvent(LivingEntity target, LivingEntity attacker, DamageSource source,
                               DamageInput input, VanillaDamageBridge.CommitResult result) { }
 
-    /** guarded 只在本击成功改点时携带判定当刻的守身份，未挡住时为空。 */
+    public enum GuardTool { UNARMED, WEAPON }
+
+    /** 判定当刻的守身份和真正承接了本击的兵器；碎裂回落到前臂时按徒手记录。 */
+    public record GuardContact(Optional<GuardState> state, GuardTool tool) {
+        static GuardContact unarmed(Optional<GuardState> state) {
+            return new GuardContact(state, GuardTool.UNARMED);
+        }
+    }
+
     public record DamageInput(DamageKind kind, double rawDamage, double damageAfterEffects,
-                              Optional<HealthTarget> hit, Optional<GuardState> guarded) { }
+                              Optional<HealthTarget> hit, GuardContact contact) {
+        public DamageInput(DamageKind kind, double rawDamage, double damageAfterEffects,
+                           Optional<HealthTarget> hit, Optional<GuardState> guarded) {
+            this(kind, rawDamage, damageAfterEffects, hit, GuardContact.unarmed(guarded));
+        }
+
+        public Optional<GuardState> guarded() {
+            return contact.state();
+        }
+
+        public boolean weaponGuarded() {
+            return contact.tool() == GuardTool.WEAPON;
+        }
+    }
 
     /** 部位倍率只参与本次单件护甲计算，耐久仍由物品保存。 */
     @FunctionalInterface
@@ -215,12 +236,13 @@ public final class VanillaDamageFabric implements ModInitializer {
             double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
             double scaled = rawVanillaHp * directCoefficient(source, rawVanillaHp);
             var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
-            double guardedDamage = scaled * defense.multiplier();
-            double afterArmor = localArmorDamage(target, source, hit, guardedDamage, extras.armorMultiplier());
+            var weapon = WeaponGuardHit.prepare(target, defense, scaled);
+            double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier());
             double dose = hit.directDose(afterArmor);
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
                     attachable(target, hit, extras));
-            var input = new DamageInput(kind, rawVanillaHp, dose, hit.target(), defense.guarded());
+            weapon.commitWear();
+            var input = new DamageInput(kind, rawVanillaHp, dose, hit.target(), weapon.contact());
             finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit);
             defense.afterCommit(target, result.body());
             return result;
@@ -431,7 +453,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         var result = frame.hit.commitIntegrated(0, frame.source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
         frame.completed = true;
-        var input = new DamageInput(frame.kind, frame.rawDamage, 0, frame.hit.target(), guarded);
+        frame.weapon.commitWear();
+        var input = new DamageInput(frame.kind, frame.rawDamage, 0, frame.hit.target(), frame.weapon.contact());
         notifyDamageObservers(new DamageEvent(entity, attacker(frame.source), frame.source, input, result));
         frame.defense.afterCommit(entity, result.body());
     }
@@ -457,10 +480,11 @@ public final class VanillaDamageFabric implements ModInitializer {
             var effect = attackEffect(entity, source, attack, frame.rawDamage, frame.muscleMultiplier);
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
             var defense = TechniqueGuardDefense.prepare(entity, source, hit, OptionalDouble.empty(), guard);
-            double guardedDamage = dose.amount() * defense.multiplier();
-            float remainingDamage = localArmorDamage(entity, source, hit, guardedDamage);
+            var weapon = WeaponGuardHit.prepare(entity, defense, dose.amount());
+            float remainingDamage = localArmorDamage(entity, source, hit, weapon.armDamage());
             frame.hit = hit;
             frame.defense = defense;
+            frame.weapon = weapon;
             frame.kind = attack.kind();
             frame.attackEffect = dose.effect();
             return Optional.of(remainingDamage);
@@ -611,9 +635,10 @@ public final class VanillaDamageFabric implements ModInitializer {
                     source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
             frame.completed = true;
             var body = result.body();
+            frame.weapon.commitWear();
             acceptAttackEffect(entity, frame);
             var input = new DamageInput(frame.kind, frame.rawDamage, damageAfterEffects,
-                    frame.hit.target(), frame.defense.guarded());
+                    frame.hit.target(), frame.weapon.contact());
             notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
             frame.defense.afterCommit(entity, body);
             if (!body.getVitality().getDead()) {
@@ -720,6 +745,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
         private TechniqueGuardDefense.Defense defense;
+        private WeaponGuardHit weapon;
         private boolean completed;
         private DamageKind kind = DamageKind.CUSTOM;
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
