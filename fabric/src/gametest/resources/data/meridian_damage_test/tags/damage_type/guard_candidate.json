@@ -1,0 +1,13 @@
+{
+  "replace": false,
+  "values": [
+    "meridian_damage_test:head_neck_strike",
+    "minecraft:arrow",
+    "minecraft:on_fire",
+    "minecraft:explosion",
+    "minecraft:fall",
+    "minecraft:magic",
+    "minecraft:indirect_magic",
+    "minecraft:sonic_boom"
+  ]
+}

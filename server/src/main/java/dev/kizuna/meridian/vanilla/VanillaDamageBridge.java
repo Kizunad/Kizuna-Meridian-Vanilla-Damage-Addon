@@ -364,7 +364,8 @@ public final class VanillaDamageBridge {
         private final String sourceId;
         private final DamageKind kind;
         private final Binding binding;
-        private final Optional<HealthTarget> target;
+        private Optional<HealthTarget> target;
+        private boolean guarded;
         private boolean committed;
 
         private PreparedHit(String subjectId, String sourceId, DamageKind kind, Binding binding,
@@ -393,8 +394,35 @@ public final class VanillaDamageBridge {
             return binding.body();
         }
 
+        public boolean redirectGuard() {
+            // 只改同一命中的目标，继续使用原宿主和 revision，不能重新选点或重复提交。
+            if (committed || guarded) {
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
+            }
+            BodySnapshot body = binding.body();
+            Optional<String> group = target.filter(HealthTarget::hasPartId)
+                    .flatMap(hit -> preferences.anatomyGroup(body, hit.getPartId()));
+            GuardRules rules = preferences.guard();
+            if (!rules.covers(body.getTemplate().getId(), group)) {
+                return false;
+            }
+            Optional<String> arm = rules.selectArm(body);
+            if (arm.isEmpty()) {
+                return false;
+            }
+            HealthTarget redirected = HealthTarget.newBuilder()
+                    .setPartId(arm.get())
+                    .build();
+            target = Optional.of(redirected);
+            guarded = true;
+            return true;
+        }
+
         public double directDose(double damageAfterArmor) {
-            // 指定部位的直接伤害不产生溢伤；在局部护甲之后裁到该账户剩余 HP。
+            // 格挡改点后交给身体原有溢伤规则；其余指定部位伤害仍裁到该部位剩余 HP。
+            if (guarded) {
+                return damageAfterArmor;
+            }
             String partId = target.orElseThrow().getPartId();
             double hp = binding.body().getPartStatesList().stream()
                     .filter(part -> part.getId().equals(partId)).findFirst().orElseThrow().getHp();
@@ -403,6 +431,9 @@ public final class VanillaDamageBridge {
 
         public long staggerMillis(double damageAfterEffects) {
             // 护甲后剂量与命中模块上限同为身体 HP；没有命中目标时无从比较，不产生僵直。
+            if (guarded || damageAfterEffects == 0) {
+                return 0;
+            }
             double doseHp = preferences.damageHp(damageAfterEffects);
             BodySnapshot body = binding.body();
             return target.map(hit -> preferences.stagger().millis(body, hit, kind, doseHp)).orElse(0L);
@@ -441,6 +472,12 @@ public final class VanillaDamageBridge {
             // 固定伤害上下文后询问效果附属；纯方案失败时不能预先消费黄心或图腾。
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
+            }
+            if (guarded && damageAfterEffects == 0) {
+                // 守式可完全吸收；不提交零剂量，也不消费局部黄心或图腾。
+                committed = true;
+                BodySnapshot unchanged = binding.body();
+                return new CommitResult(unchanged, unchanged, HealthResult.getDefaultInstance());
             }
             var damage = DamageBody.newBuilder()
                     .setSourceId(DAMAGE_SOURCE)

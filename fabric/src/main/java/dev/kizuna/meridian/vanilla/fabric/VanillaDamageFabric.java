@@ -16,6 +16,7 @@ import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
 import dev.kizuna.meridian.technique.server.TechniqueService;
+import dev.kizuna.meridian.technique.server.GuardState;
 import dev.kizuna.meridian.vanilla.protocol.pb.AttackEffectMessages;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
@@ -78,12 +79,13 @@ public final class VanillaDamageFabric implements ModInitializer {
         void onDamage(DamageEvent event);
     }
 
-    /** 身体事务提交后的固定伤害事实。 */
+    /** 结算成功后的固定伤害事实；完全挡住时可以没有身体变更。 */
     public record DamageEvent(LivingEntity target, LivingEntity attacker, DamageSource source,
                               DamageInput input, VanillaDamageBridge.CommitResult result) { }
 
+    /** guarded 只在本击成功改点时携带判定当刻的守身份，未挡住时为空。 */
     public record DamageInput(DamageKind kind, double rawDamage, double damageAfterEffects,
-                              Optional<HealthTarget> hit) { }
+                              Optional<HealthTarget> hit, Optional<GuardState> guarded) { }
 
     /** 部位倍率只参与本次单件护甲计算，耐久仍由物品保存。 */
     @FunctionalInterface
@@ -176,12 +178,13 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         String sourceId = source.typeHolder().unwrapKey().orElseThrow().identifier().toString();
         DamageKind kind = attackSource(source, sourceId).kind();
+        Optional<GuardState> guard = TechniqueGuardDefense.active(target);
         Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepareDirect(
                 target.getStringUUID(), sourceId, kind, damage.partId());
         if (prepared.isEmpty()) {
             return Optional.empty();
         }
-        return Optional.of(commitDirect(damage, prepared.get(), kind));
+        return Optional.of(commitDirect(damage, prepared.get(), kind, guard));
     }
 
     /**
@@ -201,21 +204,25 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     private static VanillaDamageBridge.CommitResult commitDirect(DirectDamage damage,
-                                                                 VanillaDamageBridge.PreparedHit hit, DamageKind kind) {
+                                                                 VanillaDamageBridge.PreparedHit hit, DamageKind kind,
+                                                                 Optional<GuardState> guard) {
         // 近战类型先按出手的肌肉系数折算（和普通路同一个出手上下文，一次出手只记一次做功），
-        // 再过局部护甲、裁到部位剩余。
+        // 再判断格挡并过新落点的局部护甲；只有未格挡的直接伤害裁到部位剩余。
         LivingEntity target = damage.target();
         DamageSource source = damage.source();
         DirectExtras extras = damage.extras();
         try (var strike = VanillaStrikeContext.damage(source); var scope = DamageScopes.enter(target)) {
             double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
             double scaled = rawVanillaHp * directCoefficient(source, rawVanillaHp);
-            double afterArmor = localArmorDamage(target, source, hit, scaled, extras.armorMultiplier());
+            var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
+            double guardedDamage = scaled * defense.multiplier();
+            double afterArmor = localArmorDamage(target, source, hit, guardedDamage, extras.armorMultiplier());
             double dose = hit.directDose(afterArmor);
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
                     attachable(target, hit, extras));
-            var input = new DamageInput(kind, rawVanillaHp, dose, hit.target());
+            var input = new DamageInput(kind, rawVanillaHp, dose, hit.target(), defense.guarded());
             finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit);
+            defense.afterCommit(target, result.body());
             return result;
         }
     }
@@ -305,6 +312,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         var attackEffectProviders = FabricLoader.getInstance().getEntrypoints(
                 AttackEffectProvider.ENTRYPOINT, AttackEffectProvider.class);
         bridge = new VanillaDamageBridge(hosts, preferences, integrations, attackEffectProviders);
+        TechniqueGuardDefense.register(bridge);
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
                 VanillaDamageTypeTags.validate(registries.lookupOrThrow(Registries.DAMAGE_TYPE));
@@ -398,7 +406,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     public static void endApplication(LivingEntity entity) {
-        // 完全抵挡或被吸收的调用也会返回，此时丢弃尚未提交的命中上下文；打进去的主击留给附伤。
+        // 正常返回时补齐完全抵挡的事实通知；打进去的主击仍留给附伤。
         Deque<DamageFrame> frames = applications.get(entity);
         if (frames == null) {
             return;
@@ -407,8 +415,25 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (frames.isEmpty()) {
             applications.remove(entity);
         }
+        notifyAbsorbedGuard(entity, frame);
         double doseHp = frame.rawDamage * frame.muscleMultiplier;
         VanillaInfusions.record(entity, frame.source, doseHp, Optional.ofNullable(frame.hit));
+    }
+
+    private static void notifyAbsorbedGuard(LivingEntity entity, DamageFrame frame) {
+        // 原版零剂量可跳过 setHealth；正常返回时补一次事实通知，不向身体提交零伤害。
+        if (frame.completed || frame.defense == null) {
+            return;
+        }
+        Optional<GuardState> guarded = frame.defense.guarded();
+        if (guarded.isEmpty()) {
+            return;
+        }
+        var result = frame.hit.commitIntegrated(0, frame.source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
+        frame.completed = true;
+        var input = new DamageInput(frame.kind, frame.rawDamage, 0, frame.hit.target(), guarded);
+        notifyDamageObservers(new DamageEvent(entity, attacker(frame.source), frame.source, input, result));
+        frame.defense.afterCommit(entity, result.body());
     }
 
     public static Optional<Float> prepareArmor(LivingEntity entity, DamageSource source, float rawDamage) {
@@ -421,6 +446,7 @@ public final class VanillaDamageFabric implements ModInitializer {
                 .orElse("meridian_vanilla:unregistered");
         try {
             AttackSource attack = attackSource(source, sourceId);
+            Optional<GuardState> guard = TechniqueGuardDefense.active(entity);
             Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getStringUUID(),
                     sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble(), attack.aimGroup());
             if (prepared.isEmpty()) {
@@ -430,8 +456,11 @@ public final class VanillaDamageFabric implements ModInitializer {
             DamageFrame frame = frames.peek();
             var effect = attackEffect(entity, source, attack, frame.rawDamage, frame.muscleMultiplier);
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
-            float remainingDamage = localArmorDamage(entity, source, hit, dose.amount());
+            var defense = TechniqueGuardDefense.prepare(entity, source, hit, OptionalDouble.empty(), guard);
+            double guardedDamage = dose.amount() * defense.multiplier();
+            float remainingDamage = localArmorDamage(entity, source, hit, guardedDamage);
             frame.hit = hit;
+            frame.defense = defense;
             frame.kind = attack.kind();
             frame.attackEffect = dose.effect();
             return Optional.of(remainingDamage);
@@ -520,7 +549,7 @@ public final class VanillaDamageFabric implements ModInitializer {
                                           VanillaDamageBridge.PreparedHit hit, double damage, double hitMultiplier) {
         // 只读取命中槽位的单件护甲，不叠加其他装备或实体固有属性；本次倍数（透劲）和登记的部位倍数相乘。
         Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
-        if (source.is(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
+        if (damage == 0 || source.is(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
             return (float) damage;
         }
         EquipmentSlot slot = equipmentSlot(coveredSlot.get());
@@ -580,10 +609,13 @@ public final class VanillaDamageFabric implements ModInitializer {
             DamageFrame frame = frames.peek();
             var result = frame.hit.commitIntegrated(damageAfterEffects,
                     source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
-            acceptAttackEffect(entity, frame);
+            frame.completed = true;
             var body = result.body();
-            var input = new DamageInput(frame.kind, frame.rawDamage, damageAfterEffects, frame.hit.target());
+            acceptAttackEffect(entity, frame);
+            var input = new DamageInput(frame.kind, frame.rawDamage, damageAfterEffects,
+                    frame.hit.target(), frame.defense.guarded());
             notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
+            frame.defense.afterCommit(entity, body);
             if (!body.getVitality().getDead()) {
                 stagger(entity, frame.hit.staggerMillis(damageAfterEffects));
             }
@@ -620,7 +652,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static void notifyDamageObservers(DamageEvent event) {
         // 调试观察失败不能回滚已经提交的身体；每个观察方独立隔离异常。
-        if (!event.result().body().getVitality().getDead()) {
+        if (event.input().damageAfterEffects() > 0 && !event.result().body().getVitality().getDead()) {
             DamageHints.injured(event.target());
         }
         for (DamageObserver observer : damageObservers) {
@@ -687,6 +719,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         private final float rawDamage;
         private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
+        private TechniqueGuardDefense.Defense defense;
+        private boolean completed;
         private DamageKind kind = DamageKind.CUSTOM;
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;

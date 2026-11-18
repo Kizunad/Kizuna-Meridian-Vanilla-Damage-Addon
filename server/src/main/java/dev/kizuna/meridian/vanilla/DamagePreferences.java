@@ -30,6 +30,7 @@ public final class DamagePreferences {
     private final double maxExtraRatio;
     private final MuscleRules muscle;
     private final StaggerRules stagger;
+    private final GuardRules guard;
 
     private DamagePreferences(double hpPerVanillaHp, TargetGroups groups,
                               Map<String, Map<String, Double>> attackers, ArmorRules armor,
@@ -45,6 +46,7 @@ public final class DamagePreferences {
         this.maxExtraRatio = attack.maxExtraRatio();
         this.muscle = combat.muscle();
         this.stagger = combat.stagger();
+        this.guard = combat.guard();
     }
 
     public static DamagePreferences load(Path path) {
@@ -85,11 +87,17 @@ public final class DamagePreferences {
         var groups = new TargetGroups(anatomies, aims);
         var attackers = parseAttackers(config);
         ArmorRules armor = ArmorRules.parse(configTable(config, "armor", VanillaDamageErrors.ARMOR_COVERAGE));
+        CombatSettings combat = parseCombatSettings(config, anatomies);
+        return new DamagePreferences(scale, groups, attackers, armor, combat);
+    }
+
+    private static CombatSettings parseCombatSettings(TomlTable config,
+                                                       Map<String, Map<String, List<String>>> anatomies) {
         AttackSettings attack = parseAttackSettings(config);
         MuscleRules muscle = MuscleRules.parse(configTable(config, "muscle", VanillaDamageErrors.MUSCLE));
         StaggerRules stagger = StaggerRules.parse(configTable(config, "stagger", VanillaDamageErrors.STAGGER));
-        var combat = new CombatSettings(attack, muscle, stagger);
-        return new DamagePreferences(scale, groups, attackers, armor, combat);
+        GuardRules guard = parseGuard(config, anatomies);
+        return new CombatSettings(attack, muscle, stagger, guard);
     }
 
     private static Map<String, Map<String, List<String>>> parseAnatomies(TomlTable config) {
@@ -197,7 +205,7 @@ public final class DamagePreferences {
     }
 
     private record AttackSettings(boolean enabled, double maxExtraRatio) { }
-    private record CombatSettings(AttackSettings attack, MuscleRules muscle, StaggerRules stagger) { }
+    private record CombatSettings(AttackSettings attack, MuscleRules muscle, StaggerRules stagger, GuardRules guard) { }
     private record TargetGroups(Map<String, Map<String, List<String>>> anatomies,
                                 Map<String, Map<String, List<String>>> aims) { }
     private enum PartGrouping { DISJOINT, OVERLAPPING }
@@ -229,6 +237,28 @@ public final class DamagePreferences {
     public StaggerRules stagger() {
         // 僵直换算与 Minecraft 无关，伤害提交与 AI 预估共用同一规则。
         return stagger;
+    }
+
+    private static GuardRules parseGuard(TomlTable config, Map<String, Map<String, List<String>>> anatomies) {
+        TomlTable guardTable = configTable(config, "guard", VanillaDamageErrors.GUARD);
+        if (config.get("guard") != null) {
+            return GuardRules.parse(guardTable, anatomies);
+        }
+        // 随包表的引用在随包解剖表中校验；旧文件的自定义分组仍在每击覆盖判断时生效。
+        TomlTable defaultAnatomies = configTable(Toml.parse(""), "anatomies", VanillaDamageErrors.ANATOMIES);
+        return GuardRules.parse(guardTable, parsePartTables(defaultAnatomies, PartGrouping.DISJOINT));
+    }
+
+    public GuardRules guard() {
+        return guard;
+    }
+
+    public Optional<String> anatomyGroup(BodySnapshot body, String partId) {
+        Map<String, List<String>> anatomy = anatomies.getOrDefault(body.getTemplate().getId(), Map.of());
+        return anatomy.entrySet().stream()
+                .filter(entry -> entry.getValue().contains(partId))
+                .map(Map.Entry::getKey)
+                .findFirst();
     }
 
     public ArmorRules armor() {

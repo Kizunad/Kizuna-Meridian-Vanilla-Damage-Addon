@@ -1,4 +1,5 @@
 {
+  "meridian_vanilla_damage.guard.unavailable": "两条前臂都使不上劲，架不起来",
   "damage_kind.meridian.blunt": "钝击",
   "damage_kind.meridian.cutting": "切割",
   "damage_kind.meridian.piercing": "穿刺",

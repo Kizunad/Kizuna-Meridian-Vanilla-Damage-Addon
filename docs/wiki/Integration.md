@@ -24,7 +24,8 @@ AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDam
 
 服务端主线程可调用 `VanillaDamageFabric.damageDirect(DirectDamage)`，参数为目标、真实 `DamageSource`、
 实际 `partId` 和正数身体 HP。来源的 `kind/*`、`bypasses_armor` 等标签沿用正常伤害映射。
-入口固定唯一宿主和部位，经局部护甲后裁到该部位剩余 HP，避免过量药伤转成其他部位的溢伤。
+入口固定唯一宿主和原部位，经过[格挡判定](Damage-Rules.md#通用格挡)后读取有效落点的局部护甲。
+成功格挡改点时沿用身体宿主的溢伤规则；其余直接伤害裁到该部位剩余 HP，避免过量药伤转成其他部位的溢伤。
 未绑定、死体或归零部位返回空；未知部位和已认领宿主失败明确报错。
 入口先执行原版 `isInvulnerableTo`、已死/正在死检查及玩家 abilities 无敌检查。
 创造与旁观玩家的无敌仍遵守 `bypasses_invulnerability`，绕过无敌帧不等于绕过无敌状态。
@@ -106,6 +107,16 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 每次事件在护甲阶段先查询所有宿主，确保恰好一个认领该身份。只有 `unbound = true` 表示可以继续寻找；明确失败、格式错误或多个认领立即拒绝，不尝试另一套账本。`prepare` 固定宿主、部位与 revision，供局部护甲结算使用；`PreparedHit.commit` 在原版抗性、附魔与吸收之后单次提交完整剂量。准备本身不扣身体 HP，完全吸收时直接丢弃。提交时使用同一宿主、固定请求 ID 和读到的身体 revision，框架继续校验、去重及原子提交。失败不重新随机选点，也不擅自刷新版本重试。
 
 近战在进入护甲阶段前，另对攻击者使用同样的唯一宿主查询规则。`exertStrike` 从做功前快照计算系数，再按原版剂量和 `[muscle]` 的焦耳、时长配置构造普通 `ExertTissues`，向同一宿主提交 `exertion`；保留身体 ID、预期 revision 与请求 ID。做功成功只要求返回同一身体，能力不足按力竭系数命中，其他错误抛出。完整规则、标签与配置见[肌肉出力](Damage-Rules.md#肌肉出力)，交付证据见[实现验证](Muscle-Validation.md)。
+
+## 伤后事实通知
+
+`registerDamageObserver` 接收普通受伤与直接肢击结算成功后的 `DamageEvent`，每击恰好一次。
+`input.guarded()` 是 `Optional<GuardState>`：仅本击成功格挡改点时有值，带判定当刻冻结的身体和施放身份；
+背后、透劲、原本命中前臂等未挡住的情况为空。表现宿主应消费这一事实，不根据当前守状态或最终落点推断。
+
+通知先于毁尽挡位后的 `endActive`。因此最后一条前臂毁掉时，宿主先收到受击反馈，再停保持和受击片段、进入收势。
+守倍率为零或后续减免吃光剂量时仍通知；普通路若原版跳过扣血位置，在 `actuallyHurt` 正常返回处补通知，
+已完成的命中不会补发。直接路仍在原结算出口通知。零剂量不另交健康命令，不消耗局部黄心或图腾。
 
 ## 攻击方附效入口
 

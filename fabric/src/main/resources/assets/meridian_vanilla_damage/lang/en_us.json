@@ -1,4 +1,5 @@
 {
+  "meridian_vanilla_damage.guard.unavailable": "Neither forearm can take a blow; you cannot raise your guard",
   "damage_kind.meridian.blunt": "Blunt",
   "damage_kind.meridian.cutting": "Cutting",
   "damage_kind.meridian.piercing": "Piercing",

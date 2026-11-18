@@ -4,6 +4,9 @@ import java.io.IOException;
 
 /** 原版伤害适配的诊断；核心失败仍使用 Protobuf 失败码。 */
 public final class VanillaDamageErrors {
+    public static final String GUARD = "guard 必须按模板声明非空、不重复且属于解剖表的 parts 和 covers";
+    public static final String GUARD_UNAVAILABLE = "meridian_vanilla_damage.guard.unavailable";
+    public static final String GUARD_END = "挡位毁尽后的收势请求被拒绝";
     public static final String MUSCLE = "muscle 必须声明合法标签、互不重复的左右部位、"
             + "正数系数及做功参数";
     public static final String STAGGER = "stagger 必须声明 (0, 1] 内的门槛与移动倍率、正数时长比例、"
