@@ -1,5 +1,6 @@
 schema_version: 1
 namespace: "meridian_damage_test"
+binding_templates { id: "human:adult" version: 1 }
 definitions {
   id: "meridian_damage_test:custom_guard"
   version: 1
