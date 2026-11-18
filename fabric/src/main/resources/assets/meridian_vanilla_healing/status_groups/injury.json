@@ -1,0 +1,6 @@
+{
+  "effects": [
+    "meridian_vanilla_damage:burn",
+    "meridian_vanilla_damage:chill"
+  ]
+}
