@@ -157,7 +157,7 @@ public final class DamageInfusionGameTest {
     public void doseIsTheMainHitAfterMuscle(GameTestHelper context) {
         // 剂量取过肌肉、未过护甲的主击：右臂力量 1.3 倍的僵尸打 4，附伤是 4 × 1.3 × 0.25。
         // 身体时钟停在 0.5 s：附行已在平台期，力量修正（覆盖 0–1 s）仍有效。
-        Zombie owner = context.spawn(EntityTypes.ZOMBIE, OWNER_X, SPAWN_Y, 0);
+        Zombie owner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
         var body = DamageGameTest.armsBody(owner, MUSCLE_BOOST);
         body.getSettledAtBuilder().setElapsedMillis(MUSCLE_CLOCK_MILLIS);
         body.putAddonProgress(TechniqueState.KEY, infusionProgress(heat().build()));
@@ -357,7 +357,7 @@ public final class DamageInfusionGameTest {
         // 主击自带原版击退时，震土追加击退整份叠上去，净增 0.3，不被原版的速度减半吃掉；击退抗性照样折算。
         Zombie earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity infused = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
-        Zombie plainOwner = context.spawn(EntityTypes.ZOMBIE, OWNER_X, SPAWN_Y, lane(1));
+        Zombie plainOwner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, lane(1));
         LivingEntity control = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
         infused.hurtServer(context.getLevel(), earthOwner.damageSources().mobAttack(earthOwner), STRIKE);
         control.hurtServer(context.getLevel(), plainOwner.damageSources().mobAttack(plainOwner), STRIKE);
@@ -400,8 +400,8 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void noInfusionWithoutActiveInfusionOrAfterExpiry(GameTestHelper context) {
         // 主人没身体、身体上没附行、附行已到期，以及箭这类投射物：都只有主击。
-        LivingEntity plain = context.spawn(EntityTypes.ZOMBIE, OWNER_X, SPAWN_Y, 0);
-        LivingEntity unlearned = context.spawn(EntityTypes.ZOMBIE, OWNER_X, SPAWN_Y, lane(1));
+        LivingEntity plain = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
+        LivingEntity unlearned = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, lane(1));
         DamageGameTest.bind(unlearned, TEMPLATE, SHELL, PART_HP);
         Zombie expired = infusedOwner(context, heat().build(), CURVE_END_MILLIS);
         Zombie archer = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
@@ -525,7 +525,7 @@ public final class DamageInfusionGameTest {
 
     private static Zombie infusedOwner(GameTestHelper context, ElementalInfusion infusion, long clockMillis) {
         // 主人身体直接带一个已生效的附行，起点 0；测试宿主不推进身体时钟，停在给定时刻。
-        Zombie owner = context.spawn(EntityTypes.ZOMBIE, OWNER_X, SPAWN_Y, 0);
+        Zombie owner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
         Map<String, Any> addonProgress = Map.of(TechniqueState.KEY, infusionProgress(infusion));
         var parts = List.of(new AnatomyState.Part(new Anatomy.PartId(SHELL), PART_HP));
         DamageGameTest.register(body(owner, parts, clockMillis, addonProgress));

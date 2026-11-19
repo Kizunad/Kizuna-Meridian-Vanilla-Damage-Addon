@@ -7,6 +7,7 @@ import dev.kizuna.meridian.vanilla.fabric.mixin.TotemAccess;
 import dev.kizuna.meridian.vanilla.ArmorRules;
 import dev.kizuna.meridian.vanilla.AttackEffectProvider;
 import dev.kizuna.meridian.vanilla.DamagePreferences;
+import dev.kizuna.meridian.vanilla.TemplateDamageDefaults;
 import dev.kizuna.meridian.vanilla.MuscleRules;
 import dev.kizuna.meridian.vanilla.VanillaDamageBridge;
 import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
@@ -71,6 +72,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     private static final List<DamageObserver> damageObservers = new CopyOnWriteArrayList<>();
     private static final List<PartArmorModifier> armorModifiers = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
+    private static final TemplateDamageDefaults templateDefaults = new TemplateDamageDefaults();
     private static DamagePreferences preferences;
 
     /** 只读伤害通知；观察方不能改变当前结算。 */
@@ -317,6 +319,13 @@ public final class VanillaDamageFabric implements ModInitializer {
         return preferences;
     }
 
+    public static synchronized void registerTemplateDefaults(String template, String bundledSource) {
+        if (bridge != null) {
+            throw new IllegalStateException("伤害配置已安装，须在模组初始化时登记模板");
+        }
+        templateDefaults.register(template, bundledSource);
+    }
+
     public static void registerDamageObserver(DamageObserver observer) {
         // 观察方只订阅提交后的事实，不能替换或短路原版伤害流程。
         damageObservers.add(java.util.Objects.requireNonNull(observer));
@@ -326,15 +335,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     public void onInitialize() {
         // 服务入口是可信进程内协议，不为客户端开放任意伤害网络包。
         VanillaAfflictions.register();
-        var hosts = FabricLoader.getInstance().getEntrypoints("meridian_health_host", BodyHealthHost.class);
-        preferences = DamagePreferences.load(FabricLoader.getInstance().getConfigDir()
-                .resolve("meridian-vanilla-damage.toml"));
-        var integrations = FabricLoader.getInstance().getEntrypoints(
-                "meridian_damage_integration", BodyDamageIntegration.class);
-        var attackEffectProviders = FabricLoader.getInstance().getEntrypoints(
-                AttackEffectProvider.ENTRYPOINT, AttackEffectProvider.class);
-        bridge = new VanillaDamageBridge(hosts, preferences, integrations, attackEffectProviders);
-        TechniqueGuardDefense.register(bridge);
+        ServerLifecycleEvents.SERVER_STARTING.register(server -> installBridge());
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
                 VanillaDamageTypeTags.validate(registries.lookupOrThrow(Registries.DAMAGE_TYPE));
@@ -352,6 +353,20 @@ public final class VanillaDamageFabric implements ModInitializer {
             VanillaStrikeContext.clear();
             VanillaInfusions.clear();
         });
+    }
+
+    private static synchronized void installBridge() {
+        if (bridge != null) {
+            return;
+        }
+        var loader = FabricLoader.getInstance();
+        var hosts = loader.getEntrypoints("meridian_health_host", BodyHealthHost.class);
+        var file = loader.getConfigDir().resolve("meridian-vanilla-damage.toml");
+        preferences = DamagePreferences.load(file, templateDefaults);
+        var integrations = loader.getEntrypoints("meridian_damage_integration", BodyDamageIntegration.class);
+        var providers = loader.getEntrypoints(AttackEffectProvider.ENTRYPOINT, AttackEffectProvider.class);
+        bridge = new VanillaDamageBridge(hosts, preferences, integrations, providers);
+        TechniqueGuardDefense.register(bridge);
     }
 
     public static float beginApplication(LivingEntity entity, DamageSource source, float rawDamage) {

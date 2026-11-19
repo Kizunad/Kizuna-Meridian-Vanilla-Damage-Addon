@@ -18,6 +18,10 @@ Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-
 
 AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDamageFabric.preferences()` 返回已校验的整份规则（例如 `stagger().millis(...)` 估算一击能否造成僵直），`VanillaDamageFabric.estimateStrikeCoefficient(snapshot, entity, grip)` 用调用方已有的攻击者快照按[肌力系数](Damage-Rules.md)同一公式与夹取给出系数。虚脱由宿主在真实做功时判定，预估不包含这一项。
 
+## 登记模板默认配置
+
+附属在 `ModInitializer.onInitialize` 中调用 `VanillaDamageFabric.registerTemplateDefaults(templateId, bundledSourceId)`。来源取自随包 TOML，例如 `human:adult`。目标模板分别继承 `armor.coverage`、`anatomies`、`guard`、`aims`。服主已为目标写出的某一段整体优先，其余段仍继承。启动时合并，已有配置文件保持原样。同一目标重复登记、来源缺段或配置已安装后再登记都会报错。
+
 ## 可信 Protobuf 入口
 
 ### 可信指定部位伤害与局部护甲修正

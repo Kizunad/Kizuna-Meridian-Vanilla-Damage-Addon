@@ -26,12 +26,12 @@ public final class GuardRules {
         this.weapon = weapon;
     }
 
-    static GuardRules parse(TomlTable table, Map<String, Map<String, List<String>>> anatomies, Weapon weapon) {
+    static GuardRules parse(Map<String, TomlTable> templates, Map<String, Map<String, List<String>>> anatomies,
+                            Weapon weapon) {
         var profiles = new HashMap<String, Profile>();
-        for (String templateId : table.keySet()) {
-            if (!(table.get(List.of(templateId)) instanceof TomlTable profile)) {
-                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.GUARD);
-            }
+        for (var entry : templates.entrySet()) {
+            String templateId = entry.getKey();
+            var profile = entry.getValue();
             Map<String, List<String>> anatomy = anatomies.getOrDefault(templateId, Map.of());
             List<String> parts = strings(profile, "parts");
             List<String> covers = strings(profile, "covers");

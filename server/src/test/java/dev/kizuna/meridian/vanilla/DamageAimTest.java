@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -118,6 +119,66 @@ public final class DamageAimTest {
                 head = ["head", "neck"]
                 torso = ["neck", "chest"]
                 """));
+    }
+
+    @Test
+    public void registeredTemplateFillsEachMissingSectionInExistingFile() throws IOException {
+        String id = "species_test:body";
+        var path = temporary.newFile("registered.toml").toPath();
+        String old = "hp_per_vanilla_hp = 1\n";
+        Files.writeString(path, old);
+        var defaults = new TemplateDamageDefaults();
+        defaults.register(id, TEMPLATE);
+        var body = body(id, "head", "neck", "left_forearm");
+        var inherited = DamagePreferences.load(path, defaults);
+        assertEquals(ArmorRules.Slot.HEAD, inherited.armor().coveredSlot(id, "head").orElseThrow());
+        assertEquals("torso", inherited.anatomyGroup(body, "neck").orElseThrow());
+        assertEquals("left_forearm", inherited.guard().selectArm(body).orElseThrow());
+        assertEquals(Map.of("head", 1.0, "neck", 1.0), inherited.weights(body, ATTACKER, HEAD_NECK));
+        assertEquals(old, Files.readString(path));
+        String overridden = old + """
+                [aims."species_test:body"]
+                head_neck = ["neck"]
+                """;
+        Files.writeString(path, overridden);
+        var custom = DamagePreferences.load(path, defaults);
+        assertEquals(Map.of("neck", 1.0), custom.weights(body, ATTACKER, HEAD_NECK));
+        assertEquals("torso", custom.anatomyGroup(body, "neck").orElseThrow());
+        assertEquals(overridden, Files.readString(path));
+    }
+
+    @Test
+    public void playerOverridesArmorAnatomyAndGuardIndependentlyOfAim() throws IOException {
+        String id = "species_test:shell";
+        var path = temporary.newFile("custom.toml").toPath();
+        Files.writeString(path, configuration() + """
+                [armor.coverage."species_test:shell"]
+                chest = ["head"]
+                [anatomies."species_test:shell"]
+                shell = ["neck", "head"]
+                [guard."species_test:shell"]
+                parts = ["head"]
+                covers = ["shell"]
+                """);
+        var defaults = new TemplateDamageDefaults();
+        defaults.register(id, TEMPLATE);
+        var body = body(id, "neck", "head", "left_forearm");
+        var rules = DamagePreferences.load(path, defaults);
+        assertEquals(ArmorRules.Slot.CHEST, rules.armor().coveredSlot(id, "head").orElseThrow());
+        assertEquals("shell", rules.anatomyGroup(body, "neck").orElseThrow());
+        assertEquals("head", rules.guard().selectArm(body).orElseThrow());
+        assertEquals(Map.of("head", 1.0, "neck", 1.0), rules.weights(body, ATTACKER, HEAD_NECK));
+    }
+
+    @Test
+    public void unregisteredTemplateRetainsUniformSelectionAndNoGuardOrArmor() throws IOException {
+        String id = "species_test:unregistered";
+        var body = body(id, "left_forearm", "head");
+        var preferences = DamagePreferences.parse(configuration());
+        assertEquals(Map.of("left_forearm", 1.0, "head", 1.0), preferences.weights(body, ATTACKER, HEAD_NECK));
+        assertEquals(Optional.empty(), preferences.anatomyGroup(body, "head"));
+        assertEquals(Optional.empty(), preferences.armor().coveredSlot(id, "head"));
+        assertEquals(Optional.empty(), preferences.guard().selectArm(body));
     }
 
     private static BodyMessages.BodySnapshot body(String templateId, String... partIds) {

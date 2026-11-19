@@ -38,7 +38,7 @@ public final class ArmorRules {
         this.durabilityCurve = List.copyOf(durabilityCurve);
     }
 
-    static ArmorRules parse(TomlTable table) {
+    static ArmorRules parse(TomlTable table, TemplateDamageDefaults defaults) {
         // 公式以明确的系数配置，不执行服务器配置文件中的任意脚本。
         if (!(table.get("formula") instanceof TomlTable formula)
                 || !"toughness".equals(formula.get("type"))) {
@@ -62,8 +62,11 @@ public final class ArmorRules {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ARMOR_COVERAGE);
         }
         var coverage = new HashMap<String, Map<String, Slot>>();
-        for (String templateId : templates.keySet()) {
-            if (templateId.isBlank() || !(templates.get(List.of(templateId)) instanceof TomlTable slots)) {
+        var effective = defaults.tables(templates, "armor.coverage", VanillaDamageErrors.ARMOR_COVERAGE);
+        for (var entry : effective.entrySet()) {
+            String templateId = entry.getKey();
+            TomlTable slots = entry.getValue();
+            if (templateId.isBlank()) {
                 throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ARMOR_COVERAGE);
             }
             var coveredParts = new HashMap<String, Slot>();

@@ -4,6 +4,7 @@ import java.io.IOException;
 
 /** 原版伤害适配的诊断；核心失败仍使用 Protobuf 失败码。 */
 public final class VanillaDamageErrors {
+    static final String TEMPLATE_DEFAULT = "模板默认配置引用无效或重复";
     public static final String GUARD_WEAPON = "兵器格挡配置无效";
     public static final String GUARD = "guard 必须按模板声明非空、不重复且属于解剖表的 parts 和 covers";
     public static final String GUARD_UNAVAILABLE = "meridian_vanilla_damage.guard.unavailable";

@@ -50,6 +50,10 @@ public final class DamagePreferences {
     }
 
     public static DamagePreferences load(Path path) {
+        return load(path, new TemplateDamageDefaults());
+    }
+
+    public static DamagePreferences load(Path path, TemplateDamageDefaults defaults) {
         // 首次启动导出可编辑默认值；以后读取已有配置，不在世界加载时重写玩家调整。
         try {
             if (!Files.exists(path)) {
@@ -61,13 +65,17 @@ public final class DamagePreferences {
                     Files.copy(input, path);
                 }
             }
-            return parse(Files.readString(path));
+            return parse(Files.readString(path), defaults);
         } catch (IOException failure) {
             throw VanillaDamageErrors.configReadFailed(failure);
         }
     }
 
     public static DamagePreferences parse(String text) {
+        return parse(text, new TemplateDamageDefaults());
+    }
+
+    private static DamagePreferences parse(String text, TemplateDamageDefaults defaults) {
         // TOML 仅作本地配置；跨附属交换仍使用框架的 protoc 消息。
         var config = Toml.parse(text);
         if (config.hasErrors()) {
@@ -81,47 +89,48 @@ public final class DamagePreferences {
         if (!Double.isFinite(scale) || scale <= 0 || scale > MAX_CONFIG_VALUE) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.SCALE);
         }
-        var anatomies = parseAnatomies(config);
+        var anatomies = parseAnatomies(config, defaults);
         TomlTable aimTable = configTable(config, "aims", VanillaDamageErrors.AIMS);
-        var aims = parsePartTables(aimTable, PartGrouping.OVERLAPPING);
+        var aims = parsePartTables(defaults.tables(aimTable, "aims", VanillaDamageErrors.AIMS),
+                PartGrouping.OVERLAPPING);
         var groups = new TargetGroups(anatomies, aims);
         var attackers = parseAttackers(config);
-        ArmorRules armor = ArmorRules.parse(configTable(config, "armor", VanillaDamageErrors.ARMOR_COVERAGE));
-        CombatSettings combat = parseCombatSettings(config, anatomies);
+        var armorTable = configTable(config, "armor", VanillaDamageErrors.ARMOR_COVERAGE);
+        ArmorRules armor = ArmorRules.parse(armorTable, defaults);
+        CombatSettings combat = parseCombatSettings(config, anatomies, defaults);
         return new DamagePreferences(scale, groups, attackers, armor, combat);
     }
 
     private static CombatSettings parseCombatSettings(TomlTable config,
-                                                       Map<String, Map<String, List<String>>> anatomies) {
+                                                       Map<String, Map<String, List<String>>> anatomies,
+                                                       TemplateDamageDefaults defaults) {
         AttackSettings attack = parseAttackSettings(config);
         MuscleRules muscle = MuscleRules.parse(configTable(config, "muscle", VanillaDamageErrors.MUSCLE));
         StaggerRules stagger = StaggerRules.parse(configTable(config, "stagger", VanillaDamageErrors.STAGGER));
-        GuardRules guard = parseGuard(config, anatomies);
+        GuardRules guard = parseGuard(config, anatomies, defaults);
         return new CombatSettings(attack, muscle, stagger, guard);
     }
 
-    private static Map<String, Map<String, List<String>>> parseAnatomies(TomlTable config) {
+    private static Map<String, Map<String, List<String>>> parseAnatomies(TomlTable config,
+                                                                            TemplateDamageDefaults defaults) {
         // 身体模板声明分组；同一部位只能属于一个组，改造新增的部位归 other。
         Object anatomyValue = config.get("anatomies");
         if (anatomyValue == null) {
-            return Map.of();
+            return parsePartTables(defaults.tables(Toml.parse(""), "anatomies", VanillaDamageErrors.ANATOMIES),
+                    PartGrouping.DISJOINT);
         }
         if (!(anatomyValue instanceof TomlTable anatomyTable)) {
             throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.ANATOMIES);
         }
-        return parsePartTables(anatomyTable, PartGrouping.DISJOINT);
+        return parsePartTables(defaults.tables(anatomyTable, "anatomies", VanillaDamageErrors.ANATOMIES),
+                PartGrouping.DISJOINT);
     }
 
-    private static Map<String, Map<String, List<String>>> parsePartTables(TomlTable templates,
+    private static Map<String, Map<String, List<String>>> parsePartTables(Map<String, TomlTable> templates,
                                                                          PartGrouping grouping) {
         // 偏好分组互斥，瞄准分组可以重叠；两者共用部位数组的结构校验。
         var tables = new HashMap<String, Map<String, List<String>>>();
-        for (String templateId : templates.keySet()) {
-            if (!(templates.get(List.of(templateId)) instanceof TomlTable groups)) {
-                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.PART_GROUPS + ": " + templateId);
-            }
-            tables.put(templateId, parsePartGroups(groups, grouping));
-        }
+        templates.forEach((id, groups) -> tables.put(id, parsePartGroups(groups, grouping)));
         return Map.copyOf(tables);
     }
 
@@ -210,18 +219,22 @@ public final class DamagePreferences {
                                 Map<String, Map<String, List<String>>> aims) { }
     private enum PartGrouping { DISJOINT, OVERLAPPING }
 
+    static TomlTable bundled() {
+        try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
+            if (input == null) {
+                throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
+            }
+            return Toml.parse(input);
+        } catch (IOException failure) {
+            throw VanillaDamageErrors.configReadFailed(failure);
+        }
+    }
+
     private static TomlTable configTable(TomlTable config, String key, String error) {
         // 旧配置缺少新增节时只读取默认值，不重写服主已有文件。
         Object value = config.get(key);
         if (value == null) {
-            try (InputStream input = DamagePreferences.class.getResourceAsStream("/meridian-vanilla-damage.toml")) {
-                if (input == null) {
-                    throw VanillaDamageErrors.invalidConfig(VanillaDamageErrors.DEFAULT_RESOURCE);
-                }
-                return Toml.parse(input).getTable(key);
-            } catch (IOException failure) {
-                throw VanillaDamageErrors.configReadFailed(failure);
-            }
+            return bundled().getTable(key);
         }
         if (!(value instanceof TomlTable table)) {
             throw VanillaDamageErrors.invalidConfig(error);
@@ -239,15 +252,19 @@ public final class DamagePreferences {
         return stagger;
     }
 
-    private static GuardRules parseGuard(TomlTable config, Map<String, Map<String, List<String>>> anatomies) {
+    private static GuardRules parseGuard(TomlTable config, Map<String, Map<String, List<String>>> anatomies,
+                                         TemplateDamageDefaults defaults) {
         TomlTable guardTable = configTable(config, "guard", VanillaDamageErrors.GUARD);
         var weapon = GuardRules.Weapon.parse(configTable(config, "guard_weapon", VanillaDamageErrors.GUARD_WEAPON));
+        var profiles = defaults.tables(guardTable, "guard", VanillaDamageErrors.GUARD);
         if (config.get("guard") != null) {
-            return GuardRules.parse(guardTable, anatomies, weapon);
+            return GuardRules.parse(profiles, anatomies, weapon);
         }
-        // 随包表的引用在随包解剖表中校验；旧文件的自定义分组仍在每击覆盖判断时生效。
-        TomlTable defaultAnatomies = configTable(Toml.parse(""), "anatomies", VanillaDamageErrors.ANATOMIES);
-        return GuardRules.parse(guardTable, parsePartTables(defaultAnatomies, PartGrouping.DISJOINT), weapon);
+        // 旧文件缺 guard 时，随包守式仍在随包解剖表中校验；新增模板按实际生效的解剖表校验。
+        var validation = new HashMap<>(anatomies);
+        var packaged = parseAnatomies(bundled(), new TemplateDamageDefaults());
+        guardTable.keySet().forEach(id -> validation.put(id, packaged.get(id)));
+        return GuardRules.parse(profiles, validation, weapon);
     }
 
     public GuardRules guard() {
