@@ -14,6 +14,7 @@ import dev.kizuna.meridian.vanilla.VanillaDamageErrors;
 import dev.kizuna.meridian.vanilla.VanillaDamageKinds;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.protocol.pb.BodyMessages;
+import dev.kizuna.meridian.protocol.pb.ActivityMessages.DamageAttachment;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
 import dev.kizuna.meridian.technique.server.TechniqueService;
@@ -86,6 +87,31 @@ public final class VanillaDamageFabric implements ModInitializer {
                               DamageInput input, VanillaDamageBridge.CommitResult result) { }
 
     public enum GuardTool { UNARMED, WEAPON }
+
+    @FunctionalInterface
+    public interface GuardCost {
+        /** 宿主从同一命中前快照计算费用与可能的撤防，不在准备阶段写身体。 */
+        DamageAttachment payment(BodyMessages.BodySnapshot body, GuardState guard,
+                                 double preventedDamage, GuardTool tool);
+    }
+
+    static GuardCost guardCost() {
+        // 正式守式使用人体内容提供的唯一纯计算入口。
+        return GuardCostProvider.INSTANCE;
+    }
+
+    private static final class GuardCostProvider {
+        private static final GuardCost INSTANCE = load();
+
+        private static GuardCost load() {
+            // 所有模组完成加载后才解析跨仓入口，避免初始化顺序影响认领。
+            var providers = FabricLoader.getInstance().getEntrypoints("meridian_guard_cost", GuardCost.class);
+            if (providers.size() != 1) {
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+            }
+            return providers.getFirst();
+        }
+    }
 
     /** 判定当刻的守身份和真正承接了本击的兵器；碎裂回落到前臂时按徒手记录。 */
     public record GuardContact(Optional<GuardState> state, GuardTool tool) {
@@ -239,6 +265,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             double scaled = rawVanillaHp * directCoefficient(source, rawVanillaHp);
             var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
             var weapon = WeaponGuardHit.prepare(target, defense, scaled);
+            TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), scaled);
             double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier());
             double dose = hit.directDose(afterArmor);
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
@@ -496,6 +523,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
             var defense = TechniqueGuardDefense.prepare(entity, source, hit, OptionalDouble.empty(), guard);
             var weapon = WeaponGuardHit.prepare(entity, defense, dose.amount());
+            TechniqueGuardDefense.attach(entity, hit, defense, weapon.contact(), dose.amount());
             float remainingDamage = localArmorDamage(entity, source, hit, weapon.armDamage());
             frame.hit = hit;
             frame.defense = defense;

@@ -1,6 +1,10 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
+import dev.kizuna.meridian.protocol.BodyProtobuf;
+import dev.kizuna.meridian.protocol.pb.ActivityMessages.DamageAttachment;
+import dev.kizuna.meridian.server.BodyActivityExecution;
+import dev.kizuna.meridian.technique.server.TechniqueHost;
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.CastRequest;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.EndActiveRequest;
@@ -57,6 +61,32 @@ final class TechniqueGuardDefense {
     static Optional<GuardState> active(LivingEntity entity) {
         // 功法宿主查询可能结算身体时钟，必须先于 Damage 固定命中 revision。
         return TechniqueFabric.service().activeGuard(entity.getUUID());
+    }
+
+    static void attach(LivingEntity entity, VanillaDamageBridge.PreparedHit hit, Defense defense,
+                       VanillaDamageFabric.GuardContact contact, double dose) {
+        // 护甲、吸收和兵器耐久均在守式免掉的这部分之外。
+        var guarded = contact.state().filter(state -> state.guard().hasStamina());
+        double prevented = dose * (1 - defense.multiplier());
+        if (guarded.isEmpty() || prevented <= 0) {
+            return;
+        }
+        var body = hit.body();
+        var payment = VanillaDamageFabric.guardCost().payment(body, guarded.get(), prevented, contact.tool());
+        if (!payment.equals(DamageAttachment.getDefaultInstance())) {
+            var activity = BodyActivityExecution.damageActivity(payment);
+            var submission = new TechniqueHost.Submission(UUID.randomUUID().toString(), body.getRevision(), activity);
+            hit.attach(payment, () -> {
+                var host = TechniqueFabric.service().statusHost(entity.getUUID()).orElseThrow();
+                // 首次 inspect 是路由认领时的快照；先核对命中身份，提交后才能读取新版本。
+                var current = host.inspect().body();
+                if (!current.id().value().equals(body.getId()) || current.revision() != submission.expectedRevision()) {
+                    throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+                }
+                host.submit(submission);
+                return BodyProtobuf.toMessage(host.inspect().body());
+            });
+        }
     }
 
     static Defense prepare(LivingEntity entity, DamageSource source, VanillaDamageBridge.PreparedHit hit,

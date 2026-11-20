@@ -8,6 +8,7 @@ import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationPlan;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.DamageIntegrationCommit;
 import dev.kizuna.meridian.core.CapabilityModifier;
 import dev.kizuna.meridian.protocol.pb.BodyMessages;
+import dev.kizuna.meridian.protocol.pb.ActivityMessages.DamageAttachment;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostRequest;
@@ -31,6 +32,7 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /** 每个事件先确定唯一执行方，再向同一宿主提交受版本保护的意图。 */
 public final class VanillaDamageBridge {
@@ -367,6 +369,17 @@ public final class VanillaDamageBridge {
         private Optional<HealthTarget> target;
         private boolean guarded;
         private boolean committed;
+        private DamageAttachment attachment;
+        private Supplier<BodySnapshot> absorbedPayment;
+
+        public void attach(DamageAttachment payment, Supplier<BodySnapshot> absorbed) {
+            // 正剂量和完全吸收共享同一明细，只有一个提交出口可消费本次命中。
+            if (!guarded || committed || attachment != null) {
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
+            }
+            attachment = payment;
+            absorbedPayment = absorbed;
+        }
 
         private PreparedHit(String subjectId, String sourceId, DamageKind kind, Binding binding,
                             Optional<HealthTarget> target) {
@@ -476,8 +489,7 @@ public final class VanillaDamageBridge {
             if (guarded && damageAfterEffects == 0) {
                 // 守式可完全吸收；不提交零剂量，也不消费局部黄心或图腾。
                 committed = true;
-                BodySnapshot unchanged = binding.body();
-                return new CommitResult(unchanged, unchanged, HealthResult.getDefaultInstance());
+                return absorbedResult();
             }
             var damage = DamageBody.newBuilder()
                     .setSourceId(DAMAGE_SOURCE)
@@ -541,8 +553,7 @@ public final class VanillaDamageBridge {
             // 完全吸收不提交零剂量；其余情况携带保命方案一次提交完整伤害。
             double remainingDamageHp = plan.getRemainingDamageHp();
             if (remainingDamageHp == 0) {
-                BodySnapshot unchanged = binding.body();
-                return new CommitResult(unchanged, unchanged, HealthResult.getDefaultInstance());
+                return absorbedResult();
             }
             var damage = original.toBuilder().setDamageHp(remainingDamageHp);
             if (plan.hasDeathProtection()) {
@@ -551,9 +562,22 @@ public final class VanillaDamageBridge {
             return submitDamage(damage.build());
         }
 
+        private CommitResult absorbedResult() {
+            // 完全吸收时只有附带费用需要写身体，保留原有的空健康结果。
+            BodySnapshot before = binding.body();
+            BodySnapshot after = before;
+            if (absorbedPayment != null) {
+                after = absorbedPayment.get();
+            }
+            return new CommitResult(before, after, HealthResult.getDefaultInstance());
+        }
+
         private CommitResult submitDamage(DamageBody damage) {
             // 快照和回执来自同一响应，观察器不会再读一次身体或猜测保命是否发生。
             var command = BodyCommand.newBuilder().setDamageBody(damage);
+            if (attachment != null) {
+                command.setDamageAttachment(attachment);
+            }
             var response = applyResponse(subjectId, binding, command);
             if (!response.hasHealth()) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);

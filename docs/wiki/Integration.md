@@ -114,6 +114,8 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 ## 伤后事实通知
 
+成功改点且守式声明体力费用时，普通入口取护甲前的出手剂量，直接入口取出手折算后的剂量。二者均按 `剂量 × (1 − 守倍率)` 冻结守式免掉的伤害。`meridian_guard_cost` 的唯一提供方实现 `VanillaDamageFabric.GuardCost`，从该击的身体、守式与承力样式生成附带明细。正剂量随健康命令一次提交，完全吸收时只提交一次含该明细的身体活动。两种出口都在提交成功后结兵器耐久并通知观察方。
+
 `registerDamageObserver` 接收普通受伤与直接肢击结算成功后的 `DamageEvent`，每击恰好一次。
 `input.guarded()` 是 `Optional<GuardState>`：仅本击成功格挡改点时有值，带判定当刻冻结的身体和施放身份；
 背后、透劲、原本命中前臂等未挡住的情况为空。表现宿主应消费这一事实，不根据当前守状态或最终落点推断。
