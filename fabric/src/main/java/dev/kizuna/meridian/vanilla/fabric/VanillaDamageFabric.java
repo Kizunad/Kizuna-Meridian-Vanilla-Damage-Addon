@@ -59,10 +59,12 @@ import java.util.OptionalDouble;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Objects;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 
 /** 在原版护甲阶段固定部位，保留后续非护甲结算，并向身体提交一次伤害。 */
 public final class VanillaDamageFabric implements ModInitializer {
     private static final int PLAYER_DAMAGE_MEMORY_TICKS = 100;
+    private static final double MAX_DAMAGE_SHARE = 1;
     /** 原版受伤动作的时长（tick）。 */
     private static final int HURT_PRESENTATION_TICKS = 10;
     private static final Logger LOGGER = LoggerFactory.getLogger("meridian_vanilla_damage");
@@ -72,6 +74,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     private static final Map<LivingEntity, Deque<DamageFrame>> applications = new IdentityHashMap<>();
     private static final List<DamageObserver> damageObservers = new CopyOnWriteArrayList<>();
     private static final List<PartArmorModifier> armorModifiers = new CopyOnWriteArrayList<>();
+    private static final List<DamageProtection> damageProtections = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
     private static final TemplateDamageDefaults templateDefaults = new TemplateDamageDefaults();
     private static DamagePreferences preferences;
@@ -82,9 +85,20 @@ public final class VanillaDamageFabric implements ModInitializer {
         void onDamage(DamageEvent event);
     }
 
+    @FunctionalInterface
+    public interface DamageProtection {
+        /** 根据命中前的实体状态返回本击保护份额；空值表示策略不处理本击。 */
+        OptionalDouble protectedDamageShare(LivingEntity target, DamageSource source,
+                                            BodyMessages.BodySnapshot body);
+    }
+
     /** 结算成功后的固定伤害事实；完全挡住时可以没有身体变更。 */
     public record DamageEvent(LivingEntity target, LivingEntity attacker, DamageSource source,
-                              DamageInput input, VanillaDamageBridge.CommitResult result) { }
+                              DamageInput input, VanillaDamageBridge.CommitResult result) {
+        public boolean bodyDead() {
+            return result.body().getVitality().getDead();
+        }
+    }
 
     public enum GuardTool { UNARMED, WEAPON }
 
@@ -180,6 +194,11 @@ public final class VanillaDamageFabric implements ModInitializer {
         armorModifiers.add(Objects.requireNonNull(modifier));
     }
 
+    public static void registerDamageProtection(DamageProtection protection) {
+        // 伤害策略由内容附属登记，结算时按注册顺序取唯一处理结果。
+        damageProtections.add(Objects.requireNonNull(protection));
+    }
+
     /** 同步伤害的动态上下文；退出顺序与进入顺序相反。 */
     public interface DamageScope {
         void enter(LivingEntity entity);
@@ -268,11 +287,13 @@ public final class VanillaDamageFabric implements ModInitializer {
             TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), scaled);
             double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier());
             double dose = hit.directDose(afterArmor);
+            OptionalDouble protectedDamageShare = protectedDamageShare(target, source, hit.body());
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
-                    attachable(target, hit, extras));
+                    attachable(target, hit, extras, protectedDamageShare));
             weapon.commitWear();
             var input = new DamageInput(kind, rawVanillaHp, dose, hit.target(), weapon.contact());
-            finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit);
+            finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit,
+                    protectedDamageShare);
             defense.afterCommit(target, result.body());
             return result;
         }
@@ -288,17 +309,20 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static VanillaDamageBridge.DamageExtras attachable(LivingEntity target,
                                                                VanillaDamageBridge.PreparedHit hit,
-                                                               DirectExtras extras) {
+                                                               DirectExtras extras,
+                                                               OptionalDouble protectedDamageShare) {
         // 修正装不下时不让整下伤害被拒：只提交伤害和透劲份额，记一条警告。
         if (hit.fits(extras.modifiers())) {
-            return new VanillaDamageBridge.DamageExtras(extras.organShare(), extras.modifiers());
+            return new VanillaDamageBridge.DamageExtras(extras.organShare(), protectedDamageShare,
+                    extras.modifiers());
         }
         LOGGER.warn("直接伤害的附带修正装不下，这一下只算伤害：target={} modifiers={}",
                 target.getStringUUID(), extras.modifiers().size());
-        return new VanillaDamageBridge.DamageExtras(extras.organShare(), List.of());
+        return new VanillaDamageBridge.DamageExtras(extras.organShare(), protectedDamageShare, List.of());
     }
 
-    private static void finishDirectDamage(DamageEvent event, VanillaDamageBridge.PreparedHit hit) {
+    private static void finishDirectDamage(DamageEvent event, VanillaDamageBridge.PreparedHit hit,
+                                           OptionalDouble protectedDamageShare) {
         // 击杀归属和观察者只在提交成功后记录；原版死亡、图腾沿已有同步路径执行。
         LivingEntity target = event.target();
         LivingEntity attacker = event.attacker();
@@ -318,8 +342,38 @@ public final class VanillaDamageFabric implements ModInitializer {
             pendingDeaths.put(target, event.source());
             finishDamage(target);
         } else {
-            stagger(target, hit.staggerMillis(event.input().damageAfterEffects()));
+            stagger(target, hit.staggerMillis(event.input().damageAfterEffects(), protectedDamageShare));
         }
+    }
+
+    private static OptionalDouble protectedDamageShare(LivingEntity target, DamageSource source,
+                                                       BodyMessages.BodySnapshot body) {
+        // 只有近战和箭类投射物属于实打；每个来源最多由一个内容策略认领。
+        if (!isProtectedSource(source)) {
+            return OptionalDouble.empty();
+        }
+        OptionalDouble selected = OptionalDouble.empty();
+        for (DamageProtection protection : damageProtections) {
+            OptionalDouble candidate = protection.protectedDamageShare(target, source, body);
+            if (candidate.isEmpty()) {
+                continue;
+            }
+            double share = candidate.getAsDouble();
+            if (!Double.isFinite(share) || share < 0 || share > MAX_DAMAGE_SHARE) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+            if (selected.isPresent()) {
+                throw new IllegalStateException(VanillaDamageErrors.DAMAGE);
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    private static boolean isProtectedSource(DamageSource source) {
+        // 三叉戟在当前映射中继承 AbstractArrow，其他带投射物标签的来源不算实打。
+        return source.is(VanillaDamageTypeTags.MELEE)
+                || (source.is(DamageTypeTags.IS_PROJECTILE) && source.getDirectEntity() instanceof AbstractArrow);
     }
 
     public static Optional<EquipmentSlot> coveredEquipmentSlot(BodyMessages.BodySnapshot body, String partId) {
@@ -526,6 +580,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             TechniqueGuardDefense.attach(entity, hit, defense, weapon.contact(), dose.amount());
             float remainingDamage = localArmorDamage(entity, source, hit, weapon.armDamage());
             frame.hit = hit;
+            frame.protectedDamageShare = protectedDamageShare(entity, source, hit.body());
             frame.defense = defense;
             frame.weapon = weapon;
             frame.kind = attack.kind();
@@ -674,8 +729,10 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
         try {
             DamageFrame frame = frames.peek();
+            var damageExtras = new VanillaDamageBridge.DamageExtras(OptionalDouble.empty(),
+                    frame.protectedDamageShare, List.of());
             var result = frame.hit.commitIntegrated(damageAfterEffects,
-                    source.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
+                    source.is(DamageTypeTags.BYPASSES_INVULNERABILITY), damageExtras);
             frame.completed = true;
             var body = result.body();
             frame.weapon.commitWear();
@@ -685,7 +742,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
             frame.defense.afterCommit(entity, body);
             if (!body.getVitality().getDead()) {
-                stagger(entity, frame.hit.staggerMillis(damageAfterEffects));
+                stagger(entity, frame.hit.staggerMillis(damageAfterEffects, frame.protectedDamageShare));
             }
             if (result.deathPrevented()) {
                 // 身体尚未死亡及清账；随后复用原版扣物品、统计、音画与效果授予流程。
@@ -787,6 +844,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         private final float rawDamage;
         private final double muscleMultiplier;
         private VanillaDamageBridge.PreparedHit hit;
+        private OptionalDouble protectedDamageShare = OptionalDouble.empty();
         private TechniqueGuardDefense.Defense defense;
         private WeaponGuardHit weapon;
         private boolean completed;

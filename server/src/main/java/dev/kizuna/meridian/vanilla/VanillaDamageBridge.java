@@ -443,8 +443,13 @@ public final class VanillaDamageBridge {
         }
 
         public long staggerMillis(double damageAfterEffects) {
-            // 护甲后剂量与命中模块上限同为身体 HP；没有命中目标时无从比较，不产生僵直。
-            if (guarded || damageAfterEffects == 0) {
+            return staggerMillis(damageAfterEffects, OptionalDouble.empty());
+        }
+
+        public long staggerMillis(double damageAfterEffects, OptionalDouble protectedDamageShare) {
+            // 受保护的实打且份额大于零免 HIT；显式零份额保持原有僵直。
+            if (guarded || damageAfterEffects == 0
+                    || protectedDamageShare.isPresent() && protectedDamageShare.getAsDouble() > 0) {
                 return 0;
             }
             double doseHp = preferences.damageHp(damageAfterEffects);
@@ -499,6 +504,7 @@ public final class VanillaDamageBridge {
             target.ifPresent(damage::setHit);
             // 透劲份额原样交给健康宿主的分层；附带修正的来源写成本附属，开始时刻留给框架按这笔事务的身体时钟写。
             extras.organShare().ifPresent(damage::setOrganShare);
+            extras.protectedDamageShare().ifPresent(damage::setProtectedDamageShare);
             for (BodyMessages.CapabilityModifier modifier : extras.modifiers()) {
                 damage.addAddModifiers(modifier.toBuilder().setSource(DAMAGE_SOURCE).clearStartMillis());
             }
@@ -592,18 +598,30 @@ public final class VanillaDamageBridge {
      * 一下伤害另带给身体的两样：透进器官的份额（缺省照伤害种类的分层），和扣血同一笔加上的能力修正。
      * 修正只填 ID、目标、曲线和倍率；来源和开始时刻由本附属和框架写。完全被吸收的伤害不提交，也就不加修正。
      */
-    public record DamageExtras(OptionalDouble organShare, List<BodyMessages.CapabilityModifier> modifiers) {
-        public static final DamageExtras NONE = new DamageExtras(OptionalDouble.empty(), List.of());
+    public record DamageExtras(OptionalDouble organShare, OptionalDouble protectedDamageShare,
+                               List<BodyMessages.CapabilityModifier> modifiers) {
+        public static final DamageExtras NONE = new DamageExtras(OptionalDouble.empty(), OptionalDouble.empty(),
+                List.of());
+
+        public DamageExtras(OptionalDouble organShare, List<BodyMessages.CapabilityModifier> modifiers) {
+            this(organShare, OptionalDouble.empty(), modifiers);
+        }
 
         public DamageExtras {
-            // 份额只接受 [0, 1]；列表固定下来，调用方之后再改不影响这一下。
-            if (organShare.isPresent()) {
-                double share = organShare.getAsDouble();
-                if (!Double.isFinite(share) || share < 0 || share > 1) {
+            // 两种份额都限定在 [0, 1]；列表固定下来，调用方之后再改不影响这一下。
+            requireShare(organShare);
+            requireShare(protectedDamageShare);
+            modifiers = List.copyOf(modifiers);
+        }
+
+        private static void requireShare(OptionalDouble share) {
+            // 缺省表示不向身体分配器传入该种伤害策略输入。
+            if (share.isPresent()) {
+                double value = share.getAsDouble();
+                if (!Double.isFinite(value) || value < 0 || value > 1) {
                     throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
                 }
             }
-            modifiers = List.copyOf(modifiers);
         }
     }
 
