@@ -56,6 +56,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Objects;
 import net.minecraft.world.entity.player.Player;
@@ -97,6 +99,25 @@ public final class VanillaDamageFabric implements ModInitializer {
                               DamageInput input, VanillaDamageBridge.CommitResult result) {
         public boolean bodyDead() {
             return result.body().getVitality().getDead();
+        }
+    }
+
+    /** 结算前可查询的伤害提供方，武器是查询时的不可变副本。 */
+    public record DamageProvider(Optional<LivingEntity> attacker, Optional<Entity> directEntity,
+                                 ItemStack weapon, DamageSource source) {
+        public DamageProvider(Optional<LivingEntity> attacker, Optional<Entity> directEntity,
+                              ItemStack weapon, DamageSource source) {
+            this.attacker = Objects.requireNonNull(attacker);
+            this.directEntity = Objects.requireNonNull(directEntity);
+            ItemStack nonNullWeapon = Objects.requireNonNull(weapon);
+            ItemStack weaponCopy = nonNullWeapon.copy();
+            this.weapon = weaponCopy;
+            this.source = Objects.requireNonNull(source);
+        }
+
+        @Override
+        public ItemStack weapon() {
+            return weapon.copy();
         }
     }
 
@@ -177,15 +198,70 @@ public final class VanillaDamageFabric implements ModInitializer {
      * 护甲倍数和 {@link #registerPartArmorModifier} 登记的倍数相乘；修正装不下（身体最多 32 条）时这一下只算伤害。
      */
     public record DirectExtras(OptionalDouble organShare, double armorMultiplier,
+                               Map<String, LocalArmor> localArmor, Optional<WeaponDamageCap> weaponCap,
                                List<BodyMessages.CapabilityModifier> modifiers) {
-        public static final DirectExtras NONE = new DirectExtras(OptionalDouble.empty(), 1, List.of());
+        public static final DirectExtras NONE = new DirectExtras(OptionalDouble.empty(), 1, Map.of(),
+                Optional.empty(), List.of());
 
-        public DirectExtras {
+        public DirectExtras(OptionalDouble organShare, double armorMultiplier,
+                            List<BodyMessages.CapabilityModifier> modifiers) {
+            this(organShare, armorMultiplier, Map.of(), Optional.empty(), modifiers);
+        }
+
+        public DirectExtras(OptionalDouble organShare, double armorMultiplier,
+                            Map<String, LocalArmor> localArmor, Optional<WeaponDamageCap> weaponCap,
+                            List<BodyMessages.CapabilityModifier> modifiers) {
             // 护甲倍数是非负有限数；份额的范围由桥接层的附带检查。
-            if (organShare == null || !Double.isFinite(armorMultiplier) || armorMultiplier < 0) {
+            if (organShare == null || !Double.isFinite(armorMultiplier) || armorMultiplier < 0
+                    || localArmor == null || weaponCap == null) {
                 throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
             }
-            modifiers = List.copyOf(modifiers);
+            Map<String, LocalArmor> armorCopy = new LinkedHashMap<>();
+            localArmor.forEach((partId, armor) -> {
+                if (partId == null || partId.isBlank() || armor == null) {
+                    throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+                }
+                armorCopy.put(partId, armor);
+            });
+            Map<String, LocalArmor> immutableArmor = Collections.unmodifiableMap(armorCopy);
+            List<BodyMessages.CapabilityModifier> modifierCopy = List.copyOf(modifiers);
+            this.organShare = organShare;
+            this.armorMultiplier = armorMultiplier;
+            this.localArmor = immutableArmor;
+            this.weaponCap = weaponCap;
+            this.modifiers = modifierCopy;
+        }
+
+        public DirectExtras(OptionalDouble organShare, double armorMultiplier,
+                            Map<String, LocalArmor> localArmor, WeaponDamageCap weaponCap,
+                            List<BodyMessages.CapabilityModifier> modifiers) {
+            this(organShare, armorMultiplier, localArmor, Optional.ofNullable(weaponCap), modifiers);
+        }
+    }
+
+    /** 一次伤害对命中部位使用的护甲与韧性。 */
+    public record LocalArmor(double armor, double toughness) {
+        public LocalArmor {
+            if (!Double.isFinite(armor) || armor < 0 || !Double.isFinite(toughness) || toughness < 0) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+        }
+    }
+
+    /** 一次伤害对指定武器生效的伤害上限。 */
+    public record WeaponDamageCap(ItemStack weapon, double maximumDamage) {
+        public WeaponDamageCap(ItemStack weapon, double maximumDamage) {
+            if (weapon == null || weapon.isEmpty() || !Double.isFinite(maximumDamage) || maximumDamage < 0) {
+                throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
+            }
+            ItemStack weaponCopy = weapon.copy();
+            this.weapon = weaponCopy;
+            this.maximumDamage = maximumDamage;
+        }
+
+        @Override
+        public ItemStack weapon() {
+            return weapon.copy();
         }
     }
 
@@ -197,6 +273,21 @@ public final class VanillaDamageFabric implements ModInitializer {
     public static void registerDamageProtection(DamageProtection protection) {
         // 伤害策略由内容附属登记，结算时按注册顺序取唯一处理结果。
         damageProtections.add(Objects.requireNonNull(protection));
+    }
+
+    public static DamageProvider damageProvider(DamageSource source) {
+        // 读取伤害来源当刻的攻击者、直接实体和主手武器，不触碰结算状态。
+        Objects.requireNonNull(source);
+        Entity directEntity = source.getDirectEntity();
+        Entity sourceEntity = source.getEntity();
+        LivingEntity attacker = sourceEntity instanceof LivingEntity living ? living : null;
+        ItemStack weapon;
+        if (attacker == null) {
+            weapon = ItemStack.EMPTY;
+        } else {
+            weapon = attacker.getMainHandItem();
+        }
+        return new DamageProvider(Optional.ofNullable(attacker), Optional.ofNullable(directEntity), weapon, source);
     }
 
     /** 同步伤害的动态上下文；退出顺序与进入顺序相反。 */
@@ -281,11 +372,13 @@ public final class VanillaDamageFabric implements ModInitializer {
         DirectExtras extras = damage.extras();
         try (var strike = VanillaStrikeContext.damage(source); var scope = DamageScopes.enter(target)) {
             double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
-            double scaled = rawVanillaHp * directCoefficient(source, rawVanillaHp);
+            double coefficientScaledDamage = rawVanillaHp * directCoefficient(source, rawVanillaHp);
+            double cappedDamage = applyWeaponCap(source, coefficientScaledDamage, extras.weaponCap());
             var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
-            var weapon = WeaponGuardHit.prepare(target, defense, scaled);
-            TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), scaled);
-            double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier());
+            var weapon = WeaponGuardHit.prepare(target, defense, cappedDamage);
+            TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), cappedDamage);
+            double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier(),
+                    extras.localArmor());
             double dose = hit.directDose(afterArmor);
             OptionalDouble protectedDamageShare = protectedDamageShare(target, source, hit.body());
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
@@ -669,26 +762,68 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static float localArmorDamage(LivingEntity entity, DamageSource source,
                                           VanillaDamageBridge.PreparedHit hit, double damage, double hitMultiplier) {
+        return localArmorDamage(entity, source, hit, damage, hitMultiplier, Map.of());
+    }
+
+    private static float localArmorDamage(LivingEntity entity, DamageSource source,
+                                          VanillaDamageBridge.PreparedHit hit, double damage, double hitMultiplier,
+                                          Map<String, LocalArmor> overrides) {
         // 只读取命中槽位的单件护甲，不叠加其他装备或实体固有属性；本次倍数（透劲）和登记的部位倍数相乘。
-        Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
-        if (damage == 0 || source.is(DamageTypeTags.BYPASSES_ARMOR) || coveredSlot.isEmpty()) {
+        if (damage == 0 || source.is(DamageTypeTags.BYPASSES_ARMOR)) {
             return (float) damage;
+        }
+        String partId = hit.target().orElseThrow().getPartId();
+        LocalArmor override = overrides.get(partId);
+        Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
+        if (coveredSlot.isEmpty()) {
+            if (override == null) {
+                return (float) damage;
+            }
+            double overrideMultiplier = hitMultiplier;
+            return (float) hit.remainingVanillaDamage(damage,
+                    override.armor() * overrideMultiplier,
+                    override.toughness() * overrideMultiplier,
+                    OptionalDouble.empty());
         }
         EquipmentSlot slot = equipmentSlot(coveredSlot.get());
         var stack = entity.getItemBySlot(slot);
-        if (!stack.is(armorTag(slot))) {
+        boolean hasOverride = override != null;
+        boolean hasVanillaArmor = stack.is(armorTag(slot));
+        if (!hasOverride && !hasVanillaArmor) {
             return (float) damage;
         }
         OptionalDouble remainingDurability = OptionalDouble.empty();
-        if (stack.isDamageableItem()) {
+        if (hasVanillaArmor && stack.isDamageableItem()) {
             double remainingRatio = 1 - stack.getDamageValue() / (double) stack.getMaxDamage();
             remainingDurability = OptionalDouble.of(Math.max(0, Math.min(1, remainingRatio)));
         }
-        String partId = hit.target().orElseThrow().getPartId();
+        double armor;
+        double toughness;
+        if (hasOverride) {
+            armor = override.armor();
+            toughness = override.toughness();
+        } else {
+            armor = armorAttribute(stack, slot, Attributes.ARMOR);
+            toughness = armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS);
+        }
         double multiplier = partArmorMultiplier(entity, partId, slot, stack) * hitMultiplier;
         return (float) hit.remainingVanillaDamage(damage,
-                armorAttribute(stack, slot, Attributes.ARMOR) * multiplier,
-                armorAttribute(stack, slot, Attributes.ARMOR_TOUGHNESS) * multiplier, remainingDurability);
+                armor * multiplier, toughness * multiplier, remainingDurability);
+    }
+
+    private static double applyWeaponCap(DamageSource source, double damage,
+                                         Optional<WeaponDamageCap> cap) {
+        // 仅当命中来源当前持有声明的武器时才限制本次伤害。
+        if (cap.isEmpty() || source.getEntity() == null) {
+            return damage;
+        }
+        ItemStack current = damageProvider(source).weapon();
+        WeaponDamageCap matched = cap.get();
+        ItemStack expected = matched.weapon();
+        if (!ItemStack.matches(current, expected)) {
+            return damage;
+        }
+        return Math.min(damage, matched.maximumDamage());
     }
 
     private static double partArmorMultiplier(LivingEntity entity, String partId,

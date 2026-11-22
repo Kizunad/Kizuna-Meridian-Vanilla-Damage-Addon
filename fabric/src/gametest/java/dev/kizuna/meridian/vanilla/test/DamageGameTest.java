@@ -59,6 +59,7 @@ import net.minecraft.world.level.GameType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -568,6 +569,63 @@ public final class DamageGameTest implements BodyHealthHost {
         context.succeed();
     }
 
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void localArmorOverrideAppliesWithoutEquippedArmor(GameTestHelper context) {
+        var target = armsTarget(context);
+        DamageSource source = target.damageSources().mobAttack(null);
+        var armor = new VanillaDamageFabric.LocalArmor(CHEST_ARMOR, CHEST_TOUGHNESS);
+        var extras = new VanillaDamageFabric.DirectExtras(OptionalDouble.empty(), 1,
+                Map.of("right_upper_arm", armor), Optional.empty(), List.of());
+
+        directAt(target, source, "right_upper_arm", extras);
+
+        double expected = CombatRules.getDamageAfterAbsorb(target, STRIKE_DAMAGE, source,
+                CHEST_ARMOR, CHEST_TOUGHNESS);
+        assertClose(context, rightArmLoss(target), expected,
+                "局部护甲覆盖应在目标未穿对应装备时生效");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void weaponDamageCapOnlyAppliesToMatchingWeapon(GameTestHelper context) {
+        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        attacker.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
+        DamageSource source = context.getLevel().damageSources().mobAttack(attacker);
+        var matching = new VanillaDamageFabric.DirectExtras(OptionalDouble.empty(), 1, Map.of(),
+                new VanillaDamageFabric.WeaponDamageCap(new ItemStack(Items.IRON_SWORD), 1), List.of());
+        var cappedTarget = armsTarget(context);
+        directAt(cappedTarget, source, "right_upper_arm", matching);
+        assertClose(context, rightArmLoss(cappedTarget), 1, "匹配武器应受伤害封顶");
+
+        var nonMatching = new VanillaDamageFabric.DirectExtras(OptionalDouble.empty(), 1, Map.of(),
+                new VanillaDamageFabric.WeaponDamageCap(new ItemStack(Items.GOLDEN_SWORD), 1), List.of());
+        var uncappedTarget = armsTarget(context);
+        directAt(uncappedTarget, source, "right_upper_arm", nonMatching);
+        assertClose(context, rightArmLoss(uncappedTarget), STRIKE_DAMAGE, "不匹配武器不应受伤害封顶");
+        context.succeed();
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void damageProviderReportsOptionalEntitiesAndCopiesWeapon(GameTestHelper context) {
+        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        attacker.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
+        DamageSource melee = context.getLevel().damageSources().mobAttack(attacker);
+        var provider = VanillaDamageFabric.damageProvider(melee);
+        context.assertTrue(provider.attacker().orElseThrow() == attacker, "伤害提供方未返回攻击者");
+        context.assertTrue(provider.directEntity().orElseThrow() == attacker, "伤害提供方未返回直接实体");
+        context.assertTrue(provider.weapon() != attacker.getMainHandItem(), "伤害提供方武器未复制");
+        attacker.getMainHandItem().setCount(2);
+        context.assertTrue(provider.weapon().getCount() == 1, "伤害提供方武器副本被外部修改");
+        ItemStack exposedWeapon = provider.weapon();
+        exposedWeapon.setCount(3);
+        context.assertTrue(provider.weapon().getCount() == 1, "伤害提供方 accessor 暴露了内部武器");
+
+        var environmental = VanillaDamageFabric.damageProvider(context.getLevel().damageSources().generic());
+        context.assertTrue(environmental.attacker().isEmpty(), "环境伤害不应伪造攻击者");
+        context.assertTrue(environmental.directEntity().isEmpty(), "环境伤害不应伪造直接实体");
+        context.succeed();
+    }
+
     private static LivingEntity armsTarget(GameTestHelper context) {
         // 在世界里的两臂身体，直接伤害都打右上臂。
         var target = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
@@ -577,7 +635,12 @@ public final class DamageGameTest implements BodyHealthHost {
 
     private static void direct(LivingEntity target, DamageSource source, VanillaDamageFabric.DirectExtras extras) {
         // 走可信指定部位入口，必须提交成功。
-        VanillaDamageFabric.damageDirect(new VanillaDamageFabric.DirectDamage(target, source, "right_upper_arm",
+        directAt(target, source, "right_upper_arm", extras);
+    }
+
+    private static void directAt(LivingEntity target, DamageSource source, String partId,
+                                 VanillaDamageFabric.DirectExtras extras) {
+        VanillaDamageFabric.damageDirect(new VanillaDamageFabric.DirectDamage(target, source, partId,
                 STRIKE_DAMAGE, extras)).orElseThrow();
     }
 
