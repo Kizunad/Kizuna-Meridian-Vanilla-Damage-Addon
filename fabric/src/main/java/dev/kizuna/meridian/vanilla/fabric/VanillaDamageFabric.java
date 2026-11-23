@@ -276,7 +276,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     public static DamageProvider damageProvider(DamageSource source) {
-        // 读取伤害来源当刻的攻击者、直接实体和主手武器，不触碰结算状态。
+        // 伤害标签标明副手时，武器快照取该手当前持物。
         Objects.requireNonNull(source);
         Entity directEntity = source.getDirectEntity();
         Entity sourceEntity = source.getEntity();
@@ -284,6 +284,8 @@ public final class VanillaDamageFabric implements ModInitializer {
         ItemStack weapon;
         if (attacker == null) {
             weapon = ItemStack.EMPTY;
+        } else if (source.is(VanillaDamageTypeTags.OFF_HAND)) {
+            weapon = attacker.getOffhandItem();
         } else {
             weapon = attacker.getMainHandItem();
         }
@@ -373,13 +375,16 @@ public final class VanillaDamageFabric implements ModInitializer {
         try (var strike = VanillaStrikeContext.damage(source); var scope = DamageScopes.enter(target)) {
             double rawVanillaHp = preferences().vanillaHp(damage.damageHp());
             double coefficientScaledDamage = rawVanillaHp * directCoefficient(source, rawVanillaHp);
-            double cappedDamage = applyWeaponCap(source, coefficientScaledDamage, extras.weaponCap());
+            double cappedDamage = DamageEquipmentOverrides.cappedDamage(source, coefficientScaledDamage,
+                    extras.weaponCap());
             var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
             var weapon = WeaponGuardHit.prepare(target, defense, cappedDamage);
             TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), cappedDamage);
             double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier(),
                     extras.localArmor());
-            double dose = hit.directDose(afterArmor);
+            var part = hit.target().filter(HealthTarget::hasPartId).map(HealthTarget::getPartId);
+            double incoming = IncomingDamage.apply(target, source, kind, part, afterArmor);
+            double dose = hit.directDose(incoming);
             OptionalDouble protectedDamageShare = protectedDamageShare(target, source, hit.body());
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
                     attachable(target, hit, extras, protectedDamageShare));
@@ -557,9 +562,10 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (!Double.isFinite(scaledDamage) || scaledDamage > Float.MAX_VALUE) {
             throw new IllegalArgumentException(VanillaDamageErrors.DAMAGE);
         }
+        double cappedDamage = DamageEquipmentOverrides.cappedDamage(source, scaledDamage, Optional.empty());
         applications.computeIfAbsent(entity, ignored -> new ArrayDeque<>())
-                .push(new DamageFrame(source, rawDamage, coefficient));
-        return (float) scaledDamage;
+                .push(new DamageFrame(source, rawDamage, coefficient, cappedDamage));
+        return (float) cappedDamage;
     }
 
     static double strikeCoefficient(LivingEntity attacker, DamageSource source, double vanillaDamage) {
@@ -627,8 +633,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             applications.remove(entity);
         }
         notifyAbsorbedGuard(entity, frame);
-        double doseHp = frame.rawDamage * frame.muscleMultiplier;
-        VanillaInfusions.record(entity, frame.source, doseHp, Optional.ofNullable(frame.hit));
+        VanillaInfusions.record(entity, frame.source, frame.cappedDamage, Optional.ofNullable(frame.hit));
     }
 
     private static void notifyAbsorbedGuard(LivingEntity entity, DamageFrame frame) {
@@ -678,7 +683,8 @@ public final class VanillaDamageFabric implements ModInitializer {
             frame.weapon = weapon;
             frame.kind = attack.kind();
             frame.attackEffect = dose.effect();
-            return Optional.of(remainingDamage);
+            var part = hit.target().filter(HealthTarget::hasPartId).map(HealthTarget::getPartId);
+            return Optional.of((float) IncomingDamage.apply(entity, source, frame.kind, part, remainingDamage));
         } catch (RuntimeException failure) {
             // 必需接线失败不能改走原版 HP；记录上下文后向调用方暴露错误。
             LOGGER.error(VanillaDamageErrors.DAMAGE_FAILED + " subject=" + entity.getStringUUID()
@@ -773,8 +779,10 @@ public final class VanillaDamageFabric implements ModInitializer {
             return (float) damage;
         }
         String partId = hit.target().orElseThrow().getPartId();
-        LocalArmor override = overrides.get(partId);
         Optional<ArmorRules.Slot> coveredSlot = hit.coveredSlot();
+        LocalArmor override = Optional.ofNullable(overrides.get(partId)).orElseGet(() ->
+                DamageEquipmentOverrides.armor(entity, partId, coveredSlot.map(VanillaDamageFabric::equipmentSlot))
+                        .orElse(null));
         if (coveredSlot.isEmpty()) {
             if (override == null) {
                 return (float) damage;
@@ -809,21 +817,6 @@ public final class VanillaDamageFabric implements ModInitializer {
         double multiplier = partArmorMultiplier(entity, partId, slot, stack) * hitMultiplier;
         return (float) hit.remainingVanillaDamage(damage,
                 armor * multiplier, toughness * multiplier, remainingDurability);
-    }
-
-    private static double applyWeaponCap(DamageSource source, double damage,
-                                         Optional<WeaponDamageCap> cap) {
-        // 仅当命中来源当前持有声明的武器时才限制本次伤害。
-        if (cap.isEmpty() || source.getEntity() == null) {
-            return damage;
-        }
-        ItemStack current = damageProvider(source).weapon();
-        WeaponDamageCap matched = cap.get();
-        ItemStack expected = matched.weapon();
-        if (!ItemStack.matches(current, expected)) {
-            return damage;
-        }
-        return Math.min(damage, matched.maximumDamage());
     }
 
     private static double partArmorMultiplier(LivingEntity entity, String partId,
@@ -978,6 +971,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         private final DamageSource source;
         private final float rawDamage;
         private final double muscleMultiplier;
+        private final double cappedDamage;
         private VanillaDamageBridge.PreparedHit hit;
         private OptionalDouble protectedDamageShare = OptionalDouble.empty();
         private TechniqueGuardDefense.Defense defense;
@@ -987,11 +981,12 @@ public final class VanillaDamageFabric implements ModInitializer {
         private VanillaDamageBridge.AttackEffectResolution attackEffect;
         private boolean attackEffectAccepted;
 
-        private DamageFrame(DamageSource source, float rawDamage, double muscleMultiplier) {
+        private DamageFrame(DamageSource source, float rawDamage, double muscleMultiplier, double cappedDamage) {
             // 附效上限仍以乘系数前的原版剂量为准，额外伤害不重复乘肌肉系数。
             this.source = source;
             this.rawDamage = rawDamage;
             this.muscleMultiplier = muscleMultiplier;
+            this.cappedDamage = cappedDamage;
         }
     }
 

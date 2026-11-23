@@ -154,7 +154,7 @@ final class VanillaInfusions {
             return;
         }
         Entity direct = Objects.requireNonNullElse(main.source().getDirectEntity(), owner);
-        DamageSource source = new DamageSource(type.get(), direct, owner);
+        DamageSource source = new IncomingDamage.QiSource(type.get(), direct, owner);
         Optional<String> partId = main.prepared().flatMap(PreparedHit::target).map(HealthTarget::getPartId);
         if (!deal(level, target, source, main.prepared().isPresent(), partId, strike.damageHp())) {
             return;

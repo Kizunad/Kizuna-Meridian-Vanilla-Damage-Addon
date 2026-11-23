@@ -24,6 +24,10 @@ AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDam
 
 ## 可信 Protobuf 入口
 
+普通受击与直接伤害在有效部位的护甲结算后都调用 `IncomingDamage.register` 登记的承伤倍率。
+回调可读目标、来源、出手装备、伤害分类和落点。多个倍率相乘，零表示吸收本次伤害。
+功法的真元附伤可使用 `IncomingDamage.QiSource` 保留来源身份，伤害类型和所属实体照常由原版提供。
+
 ### 可信指定部位伤害与局部护甲修正
 
 服务端主线程可调用 `VanillaDamageFabric.damageDirect(DirectDamage)`，参数为目标、真实 `DamageSource`、

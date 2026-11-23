@@ -491,8 +491,8 @@ public final class VanillaDamageBridge {
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
             }
-            if (guarded && damageAfterEffects == 0) {
-                // 守式可完全吸收；不提交零剂量，也不消费局部黄心或图腾。
+            if (damageAfterEffects == 0) {
+                // 完全吸收的命中保留原快照，不向宿主提交零伤害或消耗保命资源。
                 committed = true;
                 return absorbedResult();
             }
