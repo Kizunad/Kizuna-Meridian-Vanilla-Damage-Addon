@@ -2,6 +2,7 @@ package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import dev.kizuna.meridian.vanilla.fabric.BlockedAttackBridge;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
@@ -24,9 +25,21 @@ public abstract class LivingEntityDamageMixin {
     @WrapMethod(method = "hurtServer")
     private boolean meridian$strikeScope(ServerLevel level, DamageSource source, float amount,
                                          Operation<Boolean> original) {
-        // 直接伤害在盾挡前记账；横扫目标沿用外层攻击的同一笔做功。
+        // 横扫目标沿用外层攻击的同一笔做功。
+        BlockedAttackBridge.warmDamageAttacker(source);
         try (var ignored = VanillaStrikeContext.damage(source)) {
             return original.call(level, source, amount);
+        }
+    }
+
+    @Inject(method = "applyItemBlocking", at = @At("RETURN"))
+    private void meridian$recordShieldBlock(ServerLevel level, DamageSource source, float damage,
+                                            CallbackInfoReturnable<Float> callback) {
+        // 原版返回的吸收剂量是盾确实挡下本击的唯一事实。
+        if (callback.getReturnValue() > 0) {
+            LivingEntity target = (LivingEntity) (Object) this;
+            VanillaDamageFabric.recordShieldBlocked(target, source.getEntity() instanceof LivingEntity living
+                    ? living : null, source);
         }
     }
 

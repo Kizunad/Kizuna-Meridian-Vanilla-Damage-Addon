@@ -129,7 +129,15 @@ final class TechniqueGuardDefense {
             // 箭命中时取弹道反向；射手移动或箭已进入碰撞箱都不改变来向。
             return Optional.of(projectile.getDeltaMovement().reverse());
         }
-        return Optional.ofNullable(source.getSourcePosition()).map(position -> position.subtract(entity.position()));
+        Optional<Vec3> sourcePosition = Optional.ofNullable(source.getSourcePosition())
+                .map(position -> position.subtract(entity.position()));
+        if (sourcePosition.isPresent()) {
+            return sourcePosition;
+        }
+        if (source.getEntity() != null) {
+            return Optional.of(source.getEntity().position().subtract(entity.position()));
+        }
+        return Optional.empty();
     }
 
     private static GuardRules.Direction horizontal(Vec3 vector) {

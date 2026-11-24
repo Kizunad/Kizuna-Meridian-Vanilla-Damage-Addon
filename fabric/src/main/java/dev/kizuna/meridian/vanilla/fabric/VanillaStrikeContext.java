@@ -160,6 +160,7 @@ public final class VanillaStrikeContext implements AutoCloseable {
         if (miningPlayers.containsKey(player) || consumeSuppressedSwing(player, now)) {
             return;
         }
+        BlockedAttackBridge.observeHardObject(player);
         double vanillaDamage = fallbackDamage(player);
         try (var context = attack(player, player.damageSources().playerAttack(player))) {
             if (context != null) {

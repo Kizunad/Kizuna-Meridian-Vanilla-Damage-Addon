@@ -12,7 +12,8 @@
       "dev.kizuna.meridian.vanilla.test.DamageGameTest",
       "dev.kizuna.meridian.vanilla.test.DamageHintsGameTest",
       "dev.kizuna.meridian.vanilla.test.DamageInfusionGameTest",
-      "dev.kizuna.meridian.vanilla.test.GuardGameTest"
+      "dev.kizuna.meridian.vanilla.test.GuardGameTest",
+      "dev.kizuna.meridian.vanilla.test.BlockedAttackGameTest"
     ],
     "meridian_health_host": [
       "dev.kizuna.meridian.vanilla.test.DamageGameTest",

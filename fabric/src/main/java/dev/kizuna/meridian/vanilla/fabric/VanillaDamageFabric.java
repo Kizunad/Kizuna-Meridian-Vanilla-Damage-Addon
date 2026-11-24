@@ -510,10 +510,20 @@ public final class VanillaDamageFabric implements ModInitializer {
         damageObservers.add(java.util.Objects.requireNonNull(observer));
     }
 
+    public static boolean recordShieldBlocked(LivingEntity target, LivingEntity attacker, DamageSource source) {
+        // 盾挡在原版伤害早退前发生，统一桥负责保存攻击者身体时钟。
+        return BlockedAttackBridge.observeShield(target, attacker, source);
+    }
+
+    public static boolean isVanillaShield(LivingEntity target) {
+        return BlockedAttackBridge.isVanillaShield(target);
+    }
+
     @Override
     public void onInitialize() {
         // 服务入口是可信进程内协议，不为客户端开放任意伤害网络包。
         VanillaAfflictions.register();
+        registerDamageObserver(BlockedAttackBridge::observeDamage);
         ServerLifecycleEvents.SERVER_STARTING.register(server -> installBridge());
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
