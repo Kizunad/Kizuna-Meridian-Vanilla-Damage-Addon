@@ -3,7 +3,13 @@
   "id": "meridian_vanilla_damage",
   "version": "${version}",
   "name": "Kizuna's Meridian Vanilla Damage Addon",
-  "description": "原版实际扣血、怪物命中偏好与身体死亡映射",
+  "contact": {
+    "homepage": "https://github.com/Kizunad/Kizuna-Meridian-Vanilla-Damage-Addon",
+    "sources": "https://github.com/Kizunad/Kizuna-Meridian-Vanilla-Damage-Addon",
+    "issues": "https://github.com/Kizunad/Kizuna-Meridian-Vanilla-Damage-Addon/issues"
+  },
+  "icon": "assets/meridian_vanilla_damage/icon.png",
+  "description": "Connects vanilla hits and health loss to injuries on specific body parts.\n把原版命中和扣血对应到具体身体部位，并据此判定死亡。",
   "authors": ["Kizunad"],
   "license": "PolyForm-Noncommercial-1.0.0",
   "environment": "*",
