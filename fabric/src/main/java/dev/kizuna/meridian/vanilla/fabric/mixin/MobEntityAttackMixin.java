@@ -3,6 +3,8 @@ package dev.kizuna.meridian.vanilla.fabric.mixin;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponBinds;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
@@ -14,6 +16,9 @@ public abstract class MobEntityAttackMixin {
     private boolean meridian$attackScope(ServerLevel level, Entity target, Operation<Boolean> original) {
         // 生物攻击同样在目标盾挡或拒绝之前完成出手做功。
         var mob = (Mob) (Object) this;
+        if (TechniqueWeaponBinds.locked(mob, InteractionHand.MAIN_HAND)) {
+            return false;
+        }
         try (var ignored = VanillaStrikeContext.attack(mob, mob.damageSources().mobAttack(mob))) {
             return original.call(level, target);
         }

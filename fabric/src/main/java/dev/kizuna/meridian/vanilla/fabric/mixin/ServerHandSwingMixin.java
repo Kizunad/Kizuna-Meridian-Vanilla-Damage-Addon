@@ -1,6 +1,7 @@
 package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponBinds;
 import net.minecraft.network.DisconnectionDetails;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
@@ -23,7 +24,9 @@ public abstract class ServerHandSwingMixin {
     @Inject(method = "handleAnimate", at = @At("TAIL"))
     private void meridian$exertEmptySwing(ServerboundSwingPacket packet, CallbackInfo callback) {
         // 原版已经切回主线程并验证连接，客户端只提交挥手意图。
-        VanillaStrikeContext.swing(player, packet.getHand());
+        if (!TechniqueWeaponBinds.locked(player, packet.getHand())) {
+            VanillaStrikeContext.swing(player, packet.getHand());
+        }
     }
 
     @Inject(method = "handlePlayerAction", at = @At("HEAD"))

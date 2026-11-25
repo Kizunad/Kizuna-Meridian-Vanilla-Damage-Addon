@@ -1,6 +1,7 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponHeat;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponBinds;
 
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
@@ -539,6 +540,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         VanillaAfflictions.register();
         registerDamageObserver(BlockedAttackBridge::observeDamage);
         TechniqueWeaponHeat.GRIP_BURN.register(VanillaWeaponHeat::burnHand);
+        TechniqueWeaponBinds.register(new VanillaBoundArm());
         ServerLifecycleEvents.SERVER_STARTING.register(server -> installBridge());
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
@@ -689,8 +691,15 @@ public final class VanillaDamageFabric implements ModInitializer {
         try {
             AttackSource attack = attackSource(source, sourceId);
             Optional<GuardState> guard = TechniqueGuardDefense.active(entity);
-            Optional<VanillaDamageBridge.PreparedHit> prepared = bridge.prepare(entity.getStringUUID(),
-                    sourceId, attack.attackerId(), attack.kind(), entity.getRandom().nextDouble(), attack.aimGroup());
+            var boundPart = TechniqueWeaponBinds.aimedPart(entity, source);
+            Optional<VanillaDamageBridge.PreparedHit> prepared;
+            if (boundPart.isPresent()) {
+                prepared = bridge.prepareDirect(
+                        entity.getStringUUID(), sourceId, attack.kind(), boundPart.orElseThrow());
+            } else {
+                prepared = bridge.prepare(entity.getStringUUID(), sourceId, attack.attackerId(), attack.kind(),
+                        entity.getRandom().nextDouble(), attack.aimGroup());
+            }
             if (prepared.isEmpty()) {
                 return Optional.empty();
             }

@@ -2,6 +2,8 @@ package dev.kizuna.meridian.vanilla.fabric.mixin;
 
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import dev.kizuna.meridian.vanilla.fabric.VanillaStrikeContext;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponBinds;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
@@ -23,6 +25,9 @@ public abstract class PlayerEntityDamageMixin {
         // 包围整个出手及横扫循环，目标拒绝和异常退出也不重复或泄漏上下文。
         // 26.2 的 Fabric 攻击回调也在这层包装里面，回调拒绝的攻击不开出手，也不吞掉随后的挥手包。
         var player = (Player) (Object) this;
+        if (TechniqueWeaponBinds.locked(player, InteractionHand.MAIN_HAND)) {
+            return;
+        }
         var scope = VanillaStrikeContext.attackScope(player);
         try (scope) {
             original.call(target);
