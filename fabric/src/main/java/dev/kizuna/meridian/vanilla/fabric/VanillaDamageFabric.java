@@ -2,6 +2,7 @@ package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponHeat;
 import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponBinds;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponSplash;
 
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
@@ -541,6 +542,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         registerDamageObserver(BlockedAttackBridge::observeDamage);
         TechniqueWeaponHeat.GRIP_BURN.register(VanillaWeaponHeat::burnHand);
         TechniqueWeaponBinds.register(new VanillaBoundArm());
+        TechniqueWeaponSplash.HIT.register(VanillaWeaponSplash::hit);
         ServerLifecycleEvents.SERVER_STARTING.register(server -> installBridge());
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {
