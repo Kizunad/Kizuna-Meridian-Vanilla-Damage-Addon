@@ -607,6 +607,10 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (source.is(VanillaDamageTypeTags.LEG)) {
             return bridge.exertLegStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
         }
+        if (source.is(VanillaDamageTypeTags.PREPAID_MELEE)) {
+            // 持物招式已在起手时付过臂力，打击仍使用该手此刻的肌力系数。
+            return bridge.strikeCoefficient(attacker.getStringUUID(), mainArm, grip);
+        }
         return bridge.exertStrike(attacker.getStringUUID(), mainArm, grip, vanillaDamage);
     }
 

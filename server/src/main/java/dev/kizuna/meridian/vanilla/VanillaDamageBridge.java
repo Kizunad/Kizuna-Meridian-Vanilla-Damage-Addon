@@ -71,6 +71,11 @@ public final class VanillaDamageBridge {
 
     public double armCoefficient(String subjectId, MuscleRules.Arm arm) {
         // 撒放时重新读取权威身体，只取指定解剖侧的当前系数，不提交做功。
+        return strikeCoefficient(subjectId, arm, MuscleRules.Grip.MAIN_HAND);
+    }
+
+    public double strikeCoefficient(String subjectId, MuscleRules.Arm mainArm, MuscleRules.Grip grip) {
+        // 取与出手握法匹配的组织，读取已付费打击当前的肌力。
         MuscleRules rules = preferences.muscle();
         if (!rules.enabled()) {
             return 1;
@@ -79,7 +84,7 @@ public final class VanillaDamageBridge {
         if (found.isEmpty()) {
             return 1;
         }
-        return rules.plan(found.get().body(), arm, MuscleRules.Grip.MAIN_HAND).coefficient();
+        return rules.plan(found.get().body(), mainArm, grip).coefficient();
     }
 
     public double armCoefficientAt(String subjectId, MuscleRules.Arm arm, long elapsedMillis) {
