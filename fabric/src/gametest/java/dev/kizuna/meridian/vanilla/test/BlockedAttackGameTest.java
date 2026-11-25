@@ -17,7 +17,6 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -26,6 +25,7 @@ import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 
+import static dev.kizuna.meridian.vanilla.test.DamageGameTest.UNBOUND_MOB;
 import static dev.kizuna.meridian.vanilla.test.GuardTestHost.bind;
 import static dev.kizuna.meridian.vanilla.test.GuardTestHost.body;
 
@@ -111,8 +111,7 @@ public final class BlockedAttackGameTest {
 
     private static Fixture fixture(GameTestHelper context) {
         Player target = context.makeMockPlayer(GameType.SURVIVAL);
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN,
-                ORIGIN, ORIGIN, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ORIGIN, ORIGIN, ATTACKER_OFFSET);
         attacker.setNoAi(true /* noAi */);
         target.setPos(context.absoluteVec(new Vec3(TARGET_OFFSET, ORIGIN, TARGET_OFFSET)));
         bind(target, BODY_HP, BODY_HP);

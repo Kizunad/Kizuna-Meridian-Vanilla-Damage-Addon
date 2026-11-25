@@ -41,11 +41,13 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EquipmentSlotGroup;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -71,6 +73,9 @@ import static dev.kizuna.meridian.vanilla.test.DamageGameTestTicks.DEFAULT_TIMEO
  * 伤害直接调用 {@code hurtServer}：26.2 弃用的 {@code Entity.hurt} 在服务端只转调它，入口与断言不变。
  */
 public final class DamageGameTest implements BodyHealthHost {
+    // 烈焰人没有附属身体宿主，可按用例绑定测试身体，同时保留原版敌对生物的命中声类别。
+    static final EntityType<? extends Mob> UNBOUND_MOB = EntityTypes.BLAZE;
+
     private static final InMemoryBodyStore STORE = new InMemoryBodyStore(List.of(), List.of());
     private static volatile String attackEffectTarget;
     private static volatile String attackEffectFailureTarget;
@@ -130,7 +135,7 @@ public final class DamageGameTest implements BodyHealthHost {
         player.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
         // 原版在实体 tick 应用装备属性；同一测试函数内穿装备后先完成该边界。
         player.tick();
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         var meleeDamage = player.damageSources().mobAttack(attacker);
         float before = player.getHealth();
         player.hurtServer(context.getLevel(), meleeDamage, 4);
@@ -167,7 +172,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void attackEffectProviderAddsDamageAndStatusOnce(GameTestHelper context) {
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         var target = context.makeMockPlayer(GameType.SURVIVAL);
         bind(attacker, "test:creature", "shell", 100);
         bind(target, "test:creature", "shell", 100);
@@ -200,7 +205,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void attackEffectProviderFailureKeepsOriginalDamage(GameTestHelper context) {
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         var target = context.makeMockPlayer(GameType.SURVIVAL);
         bind(attacker, "test:creature", "shell", 100);
         bind(target, "test:creature", "shell", 100);
@@ -223,7 +228,7 @@ public final class DamageGameTest implements BodyHealthHost {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void localArmorRetainsVanillaEffectsAndCooldown(GameTestHelper context) {
         // 单部位样例使选点确定，依次验证每个默认槽位及没有覆盖的前臂。
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         for (String part : List.of("head", "neck", "chest", "abdomen", "left_upper_arm", "pelvis",
                 "left_thigh", "left_lower_leg", "left_foot", "left_forearm")) {
             var player = context.makeMockPlayer(GameType.SURVIVAL);
@@ -349,7 +354,7 @@ public final class DamageGameTest implements BodyHealthHost {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void durabilityAndReductionCapUseHitArmorBeforeWear(GameTestHelper context) {
         // 铁胸甲耐久 240，使各个默认端点和段中值都能由真实物品精确表示。
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         double[][] samples = {{1, 1}, {0.75, 0.925}, {0.5, 0.85}, {0.375, 0.725},
                 {0.25, 0.6}, {0.175, 0.475}, {0.1, 0.35}, {0.05, 0.175}, {0, 0}};
         for (double[] sample : samples) {
@@ -464,7 +469,7 @@ public final class DamageGameTest implements BodyHealthHost {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void arrowDamageDoesNotScaleOrExertAgain(GameTestHelper context) {
         // 箭在撒放时已经计入拉弦初速，真实箭来源的命中剂量不能再乘射手肌力。
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         bindMuscles(attacker, BOOST);
         var beforeBody = body(attacker);
         var arrow = context.spawn(EntityTypes.ARROW, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
@@ -482,7 +487,7 @@ public final class DamageGameTest implements BodyHealthHost {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void muscleScalesBeforeArmorOnceForPlayerAndUnboundTargets(GameTestHelper context) {
         // 两条 actuallyHurt 实现都必须在护甲前乘一次，目标无身体仍受攻击者系数影响。
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         bindMuscles(attacker, BOOST);
         var player = context.makeMockPlayer(GameType.SURVIVAL);
         bind(player, "human:adult", "chest", MUSCLE_HP);
@@ -499,7 +504,7 @@ public final class DamageGameTest implements BodyHealthHost {
         context.assertTrue(attackerBody.tissueStates().get(1).fatigue() > 0, "出手右臂没有记做功");
         context.assertTrue(attackerBody.tissueStates().get(0).fatigue() == 0, "主手攻击错误消耗左臂");
 
-        var otherAttacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var otherAttacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         bindMuscles(otherAttacker, BOOST);
         var cow = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
         cow.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.DIAMOND_CHESTPLATE));
@@ -515,7 +520,7 @@ public final class DamageGameTest implements BodyHealthHost {
     public void directMeleeScalesByTheStrikerOncePerStrikeAndOtherDirectDamageDoesNot(GameTestHelper context) {
         // 可信指定部位伤害：带近战标签、由活物打出的先乘出手的肌肉系数，并给出手臂记做功；
         // 同一次出手里连打两个目标只记一笔；不带近战标签的照旧不乘、不记。
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         bindMuscles(attacker, BOOST);
         var first = armsTarget(context);
         var second = armsTarget(context);
@@ -588,7 +593,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void weaponDamageCapOnlyAppliesToMatchingWeapon(GameTestHelper context) {
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         attacker.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
         DamageSource source = context.getLevel().damageSources().mobAttack(attacker);
         var matching = new VanillaDamageFabric.DirectExtras(OptionalDouble.empty(), 1, Map.of(),
@@ -607,7 +612,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void damageProviderReportsOptionalEntitiesAndCopiesWeapon(GameTestHelper context) {
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var attacker = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         attacker.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
         DamageSource melee = context.getLevel().damageSources().mobAttack(attacker);
         var provider = VanillaDamageFabric.damageProvider(melee);
@@ -628,7 +633,7 @@ public final class DamageGameTest implements BodyHealthHost {
 
     private static LivingEntity armsTarget(GameTestHelper context) {
         // 在世界里的两臂身体，直接伤害都打右上臂。
-        var target = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
+        var target = context.spawn(UNBOUND_MOB, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
         bindMuscles(target, 1);
         return target;
     }
@@ -682,7 +687,7 @@ public final class DamageGameTest implements BodyHealthHost {
             assertClose(context, before - cow.getHealth(), vanillaDamage * multiplier,
                     "同剑伤害必须跟随力量修正");
         }
-        var exhausted = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
+        var exhausted = context.spawn(UNBOUND_MOB, ATTACKER_OFFSET, SPAWN_Y, ATTACKER_OFFSET);
         bindMuscles(exhausted, 0);
         var cow = context.spawn(EntityTypes.COW, TARGET_OFFSET, SPAWN_Y, TARGET_OFFSET);
         float before = cow.getHealth();

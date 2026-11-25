@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.OptionalDouble;
 import java.util.UUID;
 
+import static dev.kizuna.meridian.vanilla.test.DamageGameTest.UNBOUND_MOB;
 import static dev.kizuna.meridian.vanilla.test.DamageGameTestTicks.DEFAULT_TIMEOUT;
 import static dev.kizuna.meridian.vanilla.test.GuardTestHost.*;
 
@@ -135,7 +136,7 @@ public final class GuardGameTest {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void mobGuardsWithItsOwnAxe(GameTestHelper context) {
-        var defender = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ORIGIN, ORIGIN, ORIGIN);
+        var defender = context.spawn(UNBOUND_MOB, ORIGIN, ORIGIN, ORIGIN);
         defender.setNoAi(true /* noAi */);
         try (var scene = scene(context, defender, ARM_HP, ARM_HP)) {
             startGuard(context, scene, GUARD_ID);
@@ -634,7 +635,7 @@ public final class GuardGameTest {
     private static Scene scene(GameTestHelper context, LivingEntity target, double leftHp, double rightHp) {
         target.setYRot(0);
         bind(target, leftHp, rightHp);
-        var attacker = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, ORIGIN, ORIGIN, ORIGIN);
+        var attacker = context.spawn(UNBOUND_MOB, ORIGIN, ORIGIN, ORIGIN);
         attacker.setNoAi(true /* noAi */);
         attacker.setPos(target.position().add(0, 0, DISTANCE));
         return new Scene(target, attacker);

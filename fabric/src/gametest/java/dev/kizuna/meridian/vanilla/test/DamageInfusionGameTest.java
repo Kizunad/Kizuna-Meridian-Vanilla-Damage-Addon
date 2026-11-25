@@ -47,8 +47,8 @@ import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.monster.zombie.Zombie;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.EvokerFangs;
 import net.minecraft.world.entity.projectile.arrow.Arrow;
@@ -63,6 +63,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static dev.kizuna.meridian.vanilla.test.DamageGameTest.UNBOUND_MOB;
 import static dev.kizuna.meridian.vanilla.test.DamageGameTestTicks.DEFAULT_TIMEOUT;
 
 /** 五行附伤接在原版伤害链上的边界：主击打进去才补一记，落点、伤害源、无敌帧、原版附带和命中声。 */
@@ -128,7 +129,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void bodiedTargetTakesInfusionOnTheSamePart(GameTestHelper context) {
         // 自定义近战类型带附伤：同一部位、本行伤害类型与致伤机制、记在主人名下；不击退、不改无敌帧。
-        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity target = bodiedTarget(context, 0, PART_HP);
         Vec3 velocity = target.getDeltaMovement();
         target.hurtServer(context.getLevel(), source(context, owner, STILL_STRIKE), STRIKE);
@@ -155,9 +156,9 @@ public final class DamageInfusionGameTest {
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void doseIsTheMainHitAfterMuscle(GameTestHelper context) {
-        // 剂量取过肌肉、未过护甲的主击：右臂力量 1.3 倍的僵尸打 4，附伤是 4 × 1.3 × 0.25。
+        // 剂量取过肌肉、未过护甲的主击：右臂力量 1.3 倍的攻击者打 4，附伤是 4 × 1.3 × 0.25。
         // 身体时钟停在 0.5 s：附行已在平台期，力量修正（覆盖 0–1 s）仍有效。
-        Zombie owner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
+        Mob owner = context.spawn(UNBOUND_MOB, OWNER_X, SPAWN_Y, 0);
         var body = DamageGameTest.armsBody(owner, MUSCLE_BOOST);
         body.getSettledAtBuilder().setElapsedMillis(MUSCLE_CLOCK_MILLIS);
         body.putAddonProgress(TechniqueState.KEY, infusionProgress(heat().build()));
@@ -174,7 +175,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void unbodiedTargetTakesInfusionAndKeepsItsCooldown(GameTestHelper context) {
         // 没身体的目标走一次原版受伤，打完无敌帧状态放回主击之后，下一击的门槛不被压低。
-        Zombie owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity cow = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         DamageSource melee = owner.damageSources().mobAttack(owner);
         float maxHealth = cow.getMaxHealth();
@@ -191,7 +192,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void burnDealsItsTotalOverItsDurationOnTheStruckPart(GameTestHelper context) {
         // 灼伤 20 tick 一共掉 1 HP，分两次打在主击那个部位上，用附伤的伤害类型、记在主人名下；烧完图标自己没。
-        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity target = bodiedTarget(context, 0, PART_HP);
         target.hurtServer(context.getLevel(), source(context, owner, STILL_STRIKE), STRIKE);
         double afterStrike = DamageGameTest.body(target).partStates().get(0).hp();
@@ -216,7 +217,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void burnOnABodilessTargetGoesThroughVanillaHurt(GameTestHelper context) {
         // 没身体的牛：灼伤走原版受伤，20 tick 掉 1 HP，不被主击留下的无敌帧挡掉。
-        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity cow = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         cow.hurtServer(context.getLevel(), owner.damageSources().mobAttack(owner), STRIKE);
         float afterStrike = cow.getHealth();
@@ -230,7 +231,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void burnRefreshesWithoutStackingOrExtraDamage(GameTestHelper context) {
         // 灼伤中再挨一下：时长回到 20，不叠成 30；掉血按固定节拍，两次灼伤连成 30 tick，一共三次。
-        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity target = bodiedTarget(context, 0, PART_HP);
         DamageSource strike = source(context, owner, STILL_STRIKE);
         target.hurtServer(context.getLevel(), strike, STRIKE);
@@ -254,7 +255,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void burnSkipsFireproofTargetsAndGoesOutInWater(GameTestHelper context) {
         // 点不着的（烈焰人）和喝了抗火药水的不挨灼伤；泡在水里的下一 tick 就灭，一下也烧不着。
-        Zombie owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, burning().build(), PLATEAU_CLOCK_MILLIS);
         DamageSource strike = owner.damageSources().mobAttack(owner);
         LivingEntity blaze = context.spawn(EntityTypes.BLAZE, TARGET_X, SPAWN_Y, 0);
         LivingEntity potioned = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
@@ -284,7 +285,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void chillStacksToTheCapSlowsByWhatIsLeftAndWearsOff(GameTestHelper context) {
         // 寒侵每中一下加 25 tick，封顶 69；减速按剩余时长算（加法），不动冻结刻；冻不了的不挨；到时间修正摘干净。
-        Zombie owner = infusedOwner(context, cold().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, cold().build(), PLATEAU_CLOCK_MILLIS);
         DamageSource strike = source(context, owner, STILL_STRIKE);
         LivingEntity once = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         LivingEntity thrice = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
@@ -342,7 +343,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void earthInfusionPushesAwayFromTheDirectEntity(GameTestHelper context) {
         // 追加击退从直接实体推开，只算水平。
-        Zombie earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
+        Mob earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity pushed = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         pushed.hurtServer(context.getLevel(), source(context, earthOwner, STILL_STRIKE), STRIKE);
         Vec3 horizontal = pushed.getDeltaMovement().multiply(1, 0, 1);
@@ -355,9 +356,9 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void earthPushAddsOnTopOfTheMainKnockback(GameTestHelper context) {
         // 主击自带原版击退时，震土追加击退整份叠上去，净增 0.3，不被原版的速度减半吃掉；击退抗性照样折算。
-        Zombie earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
+        Mob earthOwner = infusedOwner(context, earth().build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity infused = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
-        Zombie plainOwner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, lane(1));
+        Mob plainOwner = context.spawn(UNBOUND_MOB, OWNER_X, SPAWN_Y, lane(1));
         LivingEntity control = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, lane(1));
         infused.hurtServer(context.getLevel(), earthOwner.damageSources().mobAttack(earthOwner), STRIKE);
         control.hurtServer(context.getLevel(), plainOwner.damageSources().mobAttack(plainOwner), STRIKE);
@@ -375,7 +376,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void hitSoundPlaysAtTheTarget(GameTestHelper context) {
         // 命中声在目标脚下播放，附近玩家收到声音包；主人是敌对生物，类别归敌对。
-        Zombie owner = infusedOwner(context, heat().setHitSound(hitSound()).build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, heat().setHitSound(hitSound()).build(), PLATEAU_CLOCK_MILLIS);
         LivingEntity target = bodiedTarget(context, 0, PART_HP);
         var connection = new RecordingConnection(LISTENER_CHANNELS.stream().map(Identifier::parse).toList());
         var listener = new ServerPlayer(context.getLevel().getServer(), context.getLevel(),
@@ -400,11 +401,11 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void noInfusionWithoutActiveInfusionOrAfterExpiry(GameTestHelper context) {
         // 主人没身体、身体上没附行、附行已到期，以及箭这类投射物：都只有主击。
-        LivingEntity plain = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
-        LivingEntity unlearned = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, lane(1));
+        LivingEntity plain = context.spawn(UNBOUND_MOB, OWNER_X, SPAWN_Y, 0);
+        LivingEntity unlearned = context.spawn(UNBOUND_MOB, OWNER_X, SPAWN_Y, lane(1));
         DamageGameTest.bind(unlearned, TEMPLATE, SHELL, PART_HP);
-        Zombie expired = infusedOwner(context, heat().build(), CURVE_END_MILLIS);
-        Zombie archer = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
+        Mob expired = infusedOwner(context, heat().build(), CURVE_END_MILLIS);
+        Mob archer = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
         var arrow = new Arrow(context.getLevel(), archer, new ItemStack(Items.ARROW), null /* weapon */);
         List<DamageSource> sources = List.of(plain.damageSources().mobAttack(plain),
                 unlearned.damageSources().mobAttack(unlearned), expired.damageSources().mobAttack(expired),
@@ -421,7 +422,7 @@ public final class DamageInfusionGameTest {
     public void summonsCarryTheirOwnersInfusion(GameTestHelper context) {
         // 恼鬼查一跳找到主人，尖牙的伤害源本来就记着主人；附伤的直接实体仍是恼鬼或尖牙。
         // 原版没主人的尖牙打的是 magic()；直接实体是尖牙但没记主人的来源也不带。
-        Zombie owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
         var vex = context.spawn(EntityTypes.VEX, OWNER_X, SPAWN_Y, lane(2));
         vex.setOwner(owner);
         LivingEntity vexTarget = bodiedTarget(context, 0, PART_HP);
@@ -452,7 +453,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void noInfusionWhenMainHitKillsOrIsBlocked(GameTestHelper context) {
         // 主击打死目标、被盾整个挡下，都没有附伤；盾挡的主击只按原版走一次零伤害。
-        Zombie owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
         DamageSource melee = owner.damageSources().mobAttack(owner);
         LivingEntity fragile = bodiedTarget(context, 0, FRAGILE_HP);
         fragile.hurtServer(context.getLevel(), melee, STRIKE);
@@ -478,7 +479,7 @@ public final class DamageInfusionGameTest {
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void destroyedPartDropsTheInfusion(GameTestHelper context) {
         // 已毁部位照样能被主击打中，但附伤落不下去，这一记丢弃；打在完好部位上的照常补。
-        Zombie owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
+        Mob owner = infusedOwner(context, heat().build(), PLATEAU_CLOCK_MILLIS);
         DamageSource melee = owner.damageSources().mobAttack(owner);
         LivingEntity target = context.spawn(EntityTypes.COW, TARGET_X, SPAWN_Y, 0);
         var parts = List.of(new AnatomyState.Part(new Anatomy.PartId(SHELL), PART_HP),
@@ -523,9 +524,9 @@ public final class DamageInfusionGameTest {
         return new EvokerFangs(target.level(), target.getX(), target.getY(), target.getZ(), 0, 0, owner);
     }
 
-    private static Zombie infusedOwner(GameTestHelper context, ElementalInfusion infusion, long clockMillis) {
+    private static Mob infusedOwner(GameTestHelper context, ElementalInfusion infusion, long clockMillis) {
         // 主人身体直接带一个已生效的附行，起点 0；测试宿主不推进身体时钟，停在给定时刻。
-        Zombie owner = context.spawn(EntityTypes.ZOMBIFIED_PIGLIN, OWNER_X, SPAWN_Y, 0);
+        Mob owner = context.spawn(UNBOUND_MOB, OWNER_X, SPAWN_Y, 0);
         Map<String, Any> addonProgress = Map.of(TechniqueState.KEY, infusionProgress(infusion));
         var parts = List.of(new AnatomyState.Part(new Anatomy.PartId(SHELL), PART_HP));
         DamageGameTest.register(body(owner, parts, clockMillis, addonProgress));
