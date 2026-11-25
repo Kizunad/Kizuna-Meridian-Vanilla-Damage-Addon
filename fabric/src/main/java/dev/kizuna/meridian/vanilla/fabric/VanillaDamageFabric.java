@@ -1,5 +1,7 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponHeat;
+
 import dev.kizuna.meridian.server.BodyHealthHost;
 import dev.kizuna.meridian.server.BodyDamageIntegration;
 import dev.kizuna.meridian.vanilla.fabric.mixin.HurtSoundAccess;
@@ -324,6 +326,13 @@ public final class VanillaDamageFabric implements ModInitializer {
     }
 
     public static Optional<VanillaDamageBridge.CommitResult> damageDirect(DirectDamage damage) {
+        // 指定部位仍使用身体正常的分层策略。
+        return damageDirect(damage, DirectLayer.PART);
+    }
+
+    enum DirectLayer { PART, SKIN }
+
+    static Optional<VanillaDamageBridge.CommitResult> damageDirect(DirectDamage damage, DirectLayer layer) {
         // 直接提交绕开原版伤害入口的无敌帧、盾挡和击退，局部护甲仍由伤害标签决定。
         LivingEntity target = damage.target();
         if (!(target.level() instanceof ServerLevel level) || !level.getServer().isSameThread()) {
@@ -345,7 +354,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (prepared.isEmpty()) {
             return Optional.empty();
         }
-        return Optional.of(commitDirect(damage, prepared.get(), kind, guard));
+        return Optional.of(commitDirect(damage, prepared.get(), kind, guard, layer));
     }
 
     /**
@@ -366,7 +375,7 @@ public final class VanillaDamageFabric implements ModInitializer {
 
     private static VanillaDamageBridge.CommitResult commitDirect(DirectDamage damage,
                                                                  VanillaDamageBridge.PreparedHit hit, DamageKind kind,
-                                                                 Optional<GuardState> guard) {
+                                                                 Optional<GuardState> guard, DirectLayer layer) {
         // 近战类型先按出手的肌肉系数折算（和普通路同一个出手上下文，一次出手只记一次做功），
         // 再判断格挡并过新落点的局部护甲；只有未格挡的直接伤害裁到部位剩余。
         LivingEntity target = damage.target();
@@ -384,7 +393,12 @@ public final class VanillaDamageFabric implements ModInitializer {
                     extras.localArmor());
             var part = hit.target().filter(HealthTarget::hasPartId).map(HealthTarget::getPartId);
             double incoming = IncomingDamage.apply(target, source, kind, part, afterArmor);
-            double dose = hit.directDose(incoming);
+            double dose;
+            if (layer == DirectLayer.SKIN) {
+                dose = hit.directSkinDose(incoming);
+            } else {
+                dose = hit.directDose(incoming);
+            }
             OptionalDouble protectedDamageShare = protectedDamageShare(target, source, hit.body());
             var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
                     attachable(target, hit, extras, protectedDamageShare));
@@ -524,6 +538,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         // 服务入口是可信进程内协议，不为客户端开放任意伤害网络包。
         VanillaAfflictions.register();
         registerDamageObserver(BlockedAttackBridge::observeDamage);
+        TechniqueWeaponHeat.GRIP_BURN.register(VanillaWeaponHeat::burnHand);
         ServerLifecycleEvents.SERVER_STARTING.register(server -> installBridge());
         CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> {
             if (!client) {

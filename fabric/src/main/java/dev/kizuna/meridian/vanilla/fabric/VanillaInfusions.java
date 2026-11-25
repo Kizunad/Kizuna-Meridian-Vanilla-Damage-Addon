@@ -1,5 +1,7 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
+import dev.kizuna.meridian.technique.fabric.world.TechniqueWeaponHeat.HeatedStrike;
+
 import com.google.protobuf.Any;
 import dev.kizuna.meridian.core.BodySnapshot;
 import dev.kizuna.meridian.protocol.BodyProtobuf;
@@ -58,7 +60,7 @@ final class VanillaInfusions {
 
     static void record(LivingEntity target, DamageSource source, double doseHp, Optional<PreparedHit> prepared) {
         // 原版 actuallyHurt 结束时记下；盾整个挡下时剂量为 0，正在落附伤的目标上附伤自己打出的伤害不再记。
-        if (landing.contains(target) || !(doseHp > 0) || !infusable(source)) {
+        if (landing.contains(target) || !(doseHp > 0) || !(source instanceof HeatedStrike) && !infusable(source)) {
             return;
         }
         pending.put(target, new MainHit(source, doseHp, prepared));
@@ -97,6 +99,17 @@ final class VanillaInfusions {
             return;
         }
         LivingEntity resolved = owner.get();
+        if (main.source() instanceof HeatedStrike strike) {
+            landing.add(target);
+            try {
+                VanillaWeaponHeat.burnTarget(target, resolved, strike.profile(), main.doseHp(), main.prepared());
+            } finally {
+                landing.remove(target);
+            }
+            if (!target.isAlive() || !infusable(strike)) {
+                return;
+            }
+        }
         evaluate(resolved, target, main).ifPresent(strike -> execute(target, resolved, main, strike));
     }
 
@@ -205,8 +218,7 @@ final class VanillaInfusions {
         return VanillaDamageFabric.damageDirect(damage).isPresent();
     }
 
-    private static boolean dealToVanilla(ServerLevel level, LivingEntity target, DamageSource source,
-                                         double damageHp) {
+    static boolean dealToVanilla(ServerLevel level, LivingEntity target, DamageSource source, double damageHp) {
         // 附伤类型不击退、不被无敌帧挡；打完把无敌帧状态放回主击之后的值，免得压低下一击的门槛。
         var cooldown = (HurtCooldownAccess) target;
         int invulnerableTime = target.invulnerableTime;

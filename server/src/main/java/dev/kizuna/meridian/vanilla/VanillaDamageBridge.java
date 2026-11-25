@@ -443,7 +443,28 @@ public final class VanillaDamageBridge {
         }
 
         public long staggerMillis(double damageAfterEffects) {
+            // 没有独立的保护策略时使用普通僵直换算。
             return staggerMillis(damageAfterEffects, OptionalDouble.empty());
+        }
+
+        public double directSkinDose(double damageAfterArmor) {
+            // 护甲和承伤倍率已经按原部位处理；只把最终损失提交给该部位实际存在的皮肤。
+            String partId = target.orElseThrow().getPartId();
+            BodySnapshot body = binding.body();
+            var skin = body.getStructure().getTissuesList().stream()
+                    .filter(t -> t.getPartId().equals(partId) && t.getKind().equals("human:skin"))
+                    .findFirst();
+            if (skin.isEmpty()) {
+                return 0;
+            }
+            String tissueId = skin.get().getId();
+            HealthTarget surface = HealthTarget.newBuilder()
+                    .setTissueId(tissueId)
+                    .build();
+            target = Optional.of(surface);
+            double hp = body.getTissueStatesList().stream().filter(t -> t.getId().equals(tissueId))
+                    .findFirst().orElseThrow().getHp();
+            return Math.min(damageAfterArmor, preferences.vanillaHp(hp));
         }
 
         public long staggerMillis(double damageAfterEffects, OptionalDouble protectedDamageShare) {
