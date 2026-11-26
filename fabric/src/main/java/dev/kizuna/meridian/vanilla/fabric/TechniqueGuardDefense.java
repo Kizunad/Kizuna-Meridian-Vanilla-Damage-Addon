@@ -12,6 +12,8 @@ import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.Guard;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueEffect;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueFailure;
 import dev.kizuna.meridian.technique.server.GuardState;
+import dev.kizuna.meridian.technique.server.TechniqueGuardStamina;
+import dev.kizuna.meridian.technique.server.TechniqueState;
 import dev.kizuna.meridian.technique.server.TechniqueService;
 import dev.kizuna.meridian.vanilla.GuardRules;
 import dev.kizuna.meridian.vanilla.VanillaDamageBridge;
@@ -72,7 +74,9 @@ final class TechniqueGuardDefense {
             return;
         }
         var body = hit.body();
-        var payment = VanillaDamageFabric.guardCost().payment(body, guarded.get(), prevented, contact.tool());
+        GuardState state = guarded.orElseThrow();
+        var cost = VanillaDamageFabric.guardCost().payment(body, state, prevented, contact.tool());
+        var payment = withGuardContact(body, state, cost);
         if (!payment.equals(DamageAttachment.getDefaultInstance())) {
             var activity = BodyActivityExecution.damageActivity(payment);
             var submission = new TechniqueHost.Submission(UUID.randomUUID().toString(), body.getRevision(), activity);
@@ -87,6 +91,18 @@ final class TechniqueGuardDefense {
                 return BodyProtobuf.toMessage(host.inspect().body());
             });
         }
+    }
+
+    private static DamageAttachment withGuardContact(BodySnapshot body, GuardState state, DamageAttachment cost) {
+        // 破防已经随本击写入收势；仍有余力的短格把还击资格附在同一笔伤害上。
+        if (!state.guard().hasMaximumHoldMillis() || cost.containsProgress(TechniqueState.KEY)) {
+            return cost;
+        }
+        var release = TechniqueGuardStamina.guardContact(BodyProtobuf.fromMessage(body), state);
+        return cost.toBuilder()
+                .addAllStopActions(release.getStopActionsList())
+                .putAllProgress(release.getProgressMap())
+                .build();
     }
 
     static Defense prepare(LivingEntity entity, DamageSource source, VanillaDamageBridge.PreparedHit hit,
