@@ -23,6 +23,7 @@ public final class VanillaDamageErrors {
     public static final String CONFIG = "原版伤害配置无效";
     public static final String NOT_INITIALIZED = "原版伤害附属尚未初始化，不能读取伤害规则";
     public static final String CONFIG_IO = "无法读取或创建原版伤害配置";
+    public static final String MOB_BODY_THREAD = "生物身体快照只能在服务端主线程读取";
     public static final String HOST_RESPONSE = "健康宿主返回了不匹配的响应或丢失了身体绑定";
     public static final String DAMAGE_FAILED = "原版伤害或死亡未能同步到身体";
     public static final String DUPLICATE_HOST = "同一实体被多个身体宿主认领，已拒绝伤害同步";

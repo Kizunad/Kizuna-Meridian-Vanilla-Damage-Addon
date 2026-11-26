@@ -16,6 +16,9 @@ python3 scripts/check_docs.py
 
 Technique 功法库是本附属的硬依赖：命中后的[受击僵直](Damage-Rules.md#受击僵直)直接调用 `TechniqueFabric.service().stagger`。功法库与框架一样在 settings 中以源码组合（`includeSource`，替换键用功法工程的真实坐标 `dev.kizuna.meridian.technique:*`，与依赖声明一致），编译与开发运行使用其 fabric、server、shared 工程的当前输出，相邻仓库缺失时组合构建直接报错；`fabric.mod.json` 声明 `meridian_technique`。Damage 源码不依赖具体功法实现。
 
+服务端主线程可通过 `VanillaDamageFabric.existingMobBody(mob)` 读取宿主已提交或已从存档载入的快照。
+宿主通过 `registerMobBodyReader` 提供读取器。实体没有属于自己的快照时结果为空。读取不触发健康查询、建身或结算。
+
 AI 预估用两个只读入口，不查询宿主、不提交做功：`VanillaDamageFabric.preferences()` 返回已校验的整份规则（例如 `stagger().millis(...)` 估算一击能否造成僵直），`VanillaDamageFabric.estimateStrikeCoefficient(snapshot, entity, grip)` 用调用方已有的攻击者快照按[肌力系数](Damage-Rules.md)同一公式与夹取给出系数。虚脱由宿主在真实做功时判定，预估不包含这一项。
 
 ## 登记模板默认配置

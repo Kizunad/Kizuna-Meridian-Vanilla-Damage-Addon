@@ -43,6 +43,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -79,6 +80,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             new IdentityHashMap<>();
     private static final Map<LivingEntity, Deque<DamageFrame>> applications = new IdentityHashMap<>();
     private static final List<DamageObserver> damageObservers = new CopyOnWriteArrayList<>();
+    private static final List<MobBodyReader> mobBodyReaders = new CopyOnWriteArrayList<>();
     private static final List<PartArmorModifier> armorModifiers = new CopyOnWriteArrayList<>();
     private static final List<DamageProtection> damageProtections = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
@@ -89,6 +91,30 @@ public final class VanillaDamageFabric implements ModInitializer {
     @FunctionalInterface
     public interface DamageObserver {
         void onDamage(DamageEvent event);
+    }
+
+    @FunctionalInterface
+    public interface MobBodyReader {
+        /** 只返回归属此实体的已有快照，不建身、不推进身体时间。 */
+        Optional<BodyMessages.BodySnapshot> read(Mob mob);
+    }
+
+    public static void registerMobBodyReader(MobBodyReader reader) {
+        mobBodyReaders.add(Objects.requireNonNull(reader));
+    }
+
+    public static Optional<BodyMessages.BodySnapshot> existingMobBody(Mob mob) {
+        // 已绑定身体和暂存快照都归宿主读取；不向健康宿主发送会建身的 inspect 请求。
+        if (!(mob.level() instanceof ServerLevel level) || !level.getServer().isSameThread()) {
+            throw new IllegalStateException(VanillaDamageErrors.MOB_BODY_THREAD);
+        }
+        for (var reader : mobBodyReaders) {
+            var body = reader.read(mob);
+            if (body.isPresent()) {
+                return body;
+            }
+        }
+        return Optional.empty();
     }
 
     @FunctionalInterface
