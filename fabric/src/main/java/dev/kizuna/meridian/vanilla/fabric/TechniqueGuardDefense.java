@@ -65,17 +65,23 @@ final class TechniqueGuardDefense {
         return TechniqueFabric.service().activeGuard(entity.getUUID());
     }
 
-    static void attach(LivingEntity entity, VanillaDamageBridge.PreparedHit hit, Defense defense,
-                       VanillaDamageFabric.GuardContact contact, double dose) {
+    /** 准备阶段的一次来击：守方实体、来源、已固定身体版本的命中和护甲前剂量。 */
+    record GuardedHit(LivingEntity entity, DamageSource source, VanillaDamageBridge.PreparedHit hit, double dose) { }
+
+    static void attach(GuardedHit received, Defense defense, VanillaDamageFabric.GuardContact contact) {
         // 护甲、吸收和兵器耐久均在守式免掉的这部分之外。
         var guarded = contact.state().filter(state -> state.guard().hasStamina());
-        double prevented = dose * (1 - defense.multiplier());
+        double prevented = received.dose() * (1 - defense.multiplier());
         if (guarded.isEmpty() || prevented <= 0) {
             return;
         }
+        LivingEntity entity = received.entity();
+        var hit = received.hit();
         var body = hit.body();
         GuardState state = guarded.orElseThrow();
-        var cost = VanillaDamageFabric.guardCost().payment(body, state, prevented, contact.tool());
+        // 招式加收只放大计费用的减免剂量，实际减伤不变。
+        double charged = prevented * VanillaDamageFabric.guardHitCostScale(entity, received.source(), state);
+        var cost = VanillaDamageFabric.guardCost().payment(body, state, charged, contact.tool());
         var payment = withGuardContact(body, state, cost);
         if (!payment.equals(DamageAttachment.getDefaultInstance())) {
             var activity = BodyActivityExecution.damageActivity(payment);

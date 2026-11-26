@@ -125,7 +125,7 @@ Fabric 通过 `meridian_health_host` entrypoint 查找 Framework `BodyHealthHost
 
 ## 伤后事实通知
 
-成功改点且守式声明体力费用时，普通入口取护甲前的出手剂量，直接入口取出手折算后的剂量。二者均按 `剂量 × (1 − 守倍率)` 冻结守式免掉的伤害。`meridian_guard_cost` 的唯一提供方实现 `VanillaDamageFabric.GuardCost`，从该击的身体、守式与承力样式生成附带明细。正剂量随健康命令一次提交，完全吸收时只提交一次含该明细的身体活动。两种出口都在提交成功后结兵器耐久并通知观察方。
+成功改点且守式声明体力费用时，普通入口取护甲前的出手剂量，直接入口取出手折算后的剂量。二者均按 `剂量 × (1 − 守倍率)` 冻结守式免掉的伤害。`meridian_guard_cost` 的唯一提供方实现 `VanillaDamageFabric.GuardCost`，从该击的身体、守式与承力样式生成附带明细。正剂量随健康命令一次提交，完全吸收时只提交一次含该明细的身体活动。两种出口都在提交成功后结兵器耐久并通知观察方。内容模组可用 `VanillaDamageFabric.registerGuardHitCostScale` 登记招式对守方命中费的加收：守式真实承接一击时，Damage 带守方实体、伤害来源和守身份逐个查询，把各倍数相乘后只放大计费用的减免剂量。持守费、剩余伤害和兵器磨损不变，加收后的命中费仍在同一笔里判耗尽破防。查询在准备阶段进行，本击可能随后不提交，登记方只读事实、不在查询里改记录；倍数须为非负有限值，否则本击按接线错误拒绝。
 
 `registerDamageObserver` 接收普通受伤与直接肢击结算成功后的 `DamageEvent`，每击恰好一次。
 `input.guarded()` 是 `Optional<GuardState>`：仅本击成功格挡改点时有值，带判定当刻冻结的身体和施放身份；

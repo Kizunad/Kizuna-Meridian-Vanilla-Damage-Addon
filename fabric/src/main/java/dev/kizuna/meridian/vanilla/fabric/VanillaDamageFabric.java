@@ -83,6 +83,7 @@ public final class VanillaDamageFabric implements ModInitializer {
     private static final List<MobBodyReader> mobBodyReaders = new CopyOnWriteArrayList<>();
     private static final List<PartArmorModifier> armorModifiers = new CopyOnWriteArrayList<>();
     private static final List<DamageProtection> damageProtections = new CopyOnWriteArrayList<>();
+    private static final List<GuardHitCostScale> guardHitCostScales = new CopyOnWriteArrayList<>();
     private static VanillaDamageBridge bridge;
     private static final TemplateDamageDefaults templateDefaults = new TemplateDamageDefaults();
     private static DamagePreferences preferences;
@@ -176,6 +177,30 @@ public final class VanillaDamageFabric implements ModInitializer {
             }
             return providers.getFirst();
         }
+    }
+
+    @FunctionalInterface
+    public interface GuardHitCostScale {
+        /** 守式真实承接本击时查询本击命中费的倍数；只读当前事实，本击可能随后不提交。 */
+        double scale(LivingEntity defender, DamageSource source, GuardState guard);
+    }
+
+    public static void registerGuardHitCostScale(GuardHitCostScale scale) {
+        // 内容模组登记招式对守方命中费的加收；多个来源相乘。
+        guardHitCostScales.add(Objects.requireNonNull(scale));
+    }
+
+    static double guardHitCostScale(LivingEntity defender, DamageSource source, GuardState guard) {
+        // 倍数只作用于本击的命中费；持守费、剩余伤害和兵器磨损仍按原剂量。
+        double total = 1;
+        for (var scale : guardHitCostScales) {
+            double factor = scale.scale(defender, source, guard);
+            if (!Double.isFinite(factor) || factor < 0) {
+                throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.INVALID_INTEGRATION);
+            }
+            total *= factor;
+        }
+        return total;
     }
 
     /** 判定当刻的守身份和真正承接了本击的兵器；碎裂回落到前臂时按徒手记录。 */
@@ -416,7 +441,8 @@ public final class VanillaDamageFabric implements ModInitializer {
                     extras.weaponCap());
             var defense = TechniqueGuardDefense.prepare(target, source, hit, extras.organShare(), guard);
             var weapon = WeaponGuardHit.prepare(target, defense, cappedDamage);
-            TechniqueGuardDefense.attach(target, hit, defense, weapon.contact(), cappedDamage);
+            TechniqueGuardDefense.attach(new TechniqueGuardDefense.GuardedHit(target, source, hit, cappedDamage),
+                    defense, weapon.contact());
             double afterArmor = localArmorDamage(target, source, hit, weapon.armDamage(), extras.armorMultiplier(),
                     extras.localArmor());
             var part = hit.target().filter(HealthTarget::hasPartId).map(HealthTarget::getPartId);
@@ -741,7 +767,8 @@ public final class VanillaDamageFabric implements ModInitializer {
             AttackDose dose = attackDose(entity, sourceId, rawDamage, effect);
             var defense = TechniqueGuardDefense.prepare(entity, source, hit, OptionalDouble.empty(), guard);
             var weapon = WeaponGuardHit.prepare(entity, defense, dose.amount());
-            TechniqueGuardDefense.attach(entity, hit, defense, weapon.contact(), dose.amount());
+            TechniqueGuardDefense.attach(new TechniqueGuardDefense.GuardedHit(entity, source, hit, dose.amount()),
+                    defense, weapon.contact());
             float remainingDamage = localArmorDamage(entity, source, hit, weapon.armDamage());
             frame.hit = hit;
             frame.protectedDamageShare = protectedDamageShare(entity, source, hit.body());
