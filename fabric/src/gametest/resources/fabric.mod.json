@@ -10,6 +10,7 @@
   "entrypoints": {
     "fabric-gametest": [
       "dev.kizuna.meridian.vanilla.test.DamageGameTest",
+      "dev.kizuna.meridian.vanilla.test.DeathLootGameTest",
       "dev.kizuna.meridian.vanilla.test.DamageHintsGameTest",
       "dev.kizuna.meridian.vanilla.test.DamageInfusionGameTest",
       "dev.kizuna.meridian.vanilla.test.GuardGameTest",

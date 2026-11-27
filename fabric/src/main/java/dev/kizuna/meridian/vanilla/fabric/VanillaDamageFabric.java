@@ -499,16 +499,23 @@ public final class VanillaDamageFabric implements ModInitializer {
         if (attacker instanceof Player player) {
             target.setLastHurtByPlayer(player, PLAYER_DAMAGE_MEMORY_TICKS);
         }
-        target.getCombatTracker().recordDamage(event.source(), (float) event.input().damageAfterEffects());
+        DamageSource source = event.source();
+        double dose = event.input().damageAfterEffects();
+        float amount = (float) dose;
+        target.getCombatTracker().recordDamage(source, amount);
         notifyDamageObservers(event);
         if (event.result().deathPrevented()) {
-            ((TotemAccess) target).meridian$tryUseTotem(event.source());
+            ((TotemAccess) target).meridian$tryUseTotem(source);
         }
-        if (event.result().body().getVitality().getDead()) {
-            pendingDeaths.put(target, event.source());
-            finishDamage(target);
+        if (event.bodyDead()) {
+            // 直接伤害没有外层 hurtServer 负责死亡检查，沿用同一伤害来源和死亡事件。
+            if (ServerLivingEntityEvents.ALLOW_DEATH.invoker().allowDeath(target, source, amount)) {
+                target.die(source);
+            }
+            // 已绑定实体的 setter 会投影回调结束时的权威身体，包括监听器处理过的保命。
+            target.setHealth(0);
         } else {
-            stagger(target, hit.staggerMillis(event.input().damageAfterEffects(), protectedDamageShare));
+            stagger(target, hit.staggerMillis(dose, protectedDamageShare));
         }
     }
 
@@ -956,20 +963,25 @@ public final class VanillaDamageFabric implements ModInitializer {
                     source.is(DamageTypeTags.BYPASSES_INVULNERABILITY), damageExtras);
             frame.completed = true;
             var body = result.body();
+            boolean bodyDead = body.getVitality().getDead();
+            if (bodyDead) {
+                // 原版 hurtServer 随后读取血量，调用图腾检查、死亡事件与 die。
+                entity.setHealth(0);
+            }
             frame.weapon.commitWear();
             acceptAttackEffect(entity, frame);
             var input = new DamageInput(frame.kind, frame.rawDamage, damageAfterEffects,
                     frame.hit.target(), frame.weapon.contact());
             notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
             frame.defense.afterCommit(entity, body);
-            if (!body.getVitality().getDead()) {
+            if (!bodyDead) {
                 stagger(entity, frame.hit.staggerMillis(damageAfterEffects, frame.protectedDamageShare));
             }
             if (result.deathPrevented()) {
                 // 身体尚未死亡及清账；随后复用原版扣物品、统计、音画与效果授予流程。
                 ((TotemAccess) entity).meridian$tryUseTotem(source);
             }
-            if (body.getVitality().getDead()) {
+            if (bodyDead) {
                 // 等原版伤害调用结束后再同步死亡，避免在 actuallyHurt 中途重入 die。
                 pendingDeaths.put(entity, source);
             }

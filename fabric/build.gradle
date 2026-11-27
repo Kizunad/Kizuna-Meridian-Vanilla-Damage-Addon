@@ -60,6 +60,7 @@ dependencies {
     gametestImplementation testFixtures('dev.kizuna.meridian.technique:fabric')
     // 格挡溢伤使用真实人体策略验证；正式源码仍只依赖 Framework 公共宿主。
     gametestImplementation files(kizunaWorkspace.artifact('human', 'server', false))
+    gametestCompileOnly files(kizunaWorkspace.artifact('mob-inventory', 'fabric', false))
 }
 
 loom {
