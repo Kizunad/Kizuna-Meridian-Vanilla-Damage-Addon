@@ -6,6 +6,7 @@ import dev.kizuna.meridian.technique.fabric.testing.RecordingConnection;
 import dev.kizuna.meridian.technique.fabric.testing.TestPlayers;
 import dev.kizuna.meridian.vanilla.VanillaDamageBridge.CommitResult;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
+import dev.kizuna.meridian.vanilla.fabric.LethalHitVeto;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,10 +42,60 @@ public final class DeathLootGameTest {
     private static final int COPPER_CASH = 7;
     private static final int MAX_MELEE_HITS = 30;
     private static final Map<LivingEntity, Integer> DEATHS = new IdentityHashMap<>();
+    private static final String DUEL = "meridian_damage_test.duel";
+    private static final String SPARED = "meridian_damage_test.spared";
 
     static {
+        LethalHitVeto.register(new LethalHitVeto() {
+            public boolean protects(Hit hit) {
+                return hit.target().entityTags().contains(DUEL) && hit.attacker() != null;
+            }
+
+            public void spared(Hit hit) {
+                hit.target().addTag(SPARED);
+            }
+        });
         ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) ->
                 DEATHS.computeIfPresent(entity, (victim, count) -> count + 1));
+    }
+
+    @GameTest
+    public void meleeVetoLeavesLivingPlayer(GameTestHelper test) {
+        withPlayer(test, player -> {
+            player.addTag(DUEL);
+            var attacker = test.spawn(EntityTypes.COW, SPAWN);
+            var source = player.damageSources().mobAttack(attacker);
+            for (int hit = 0; hit < MAX_MELEE_HITS && !player.entityTags().contains(SPARED); hit++) {
+                player.invulnerableTime = 0;
+                player.hurtServer(player.level(), source, LETHAL);
+            }
+            test.assertTrue(player.isAlive() && player.entityTags().contains(SPARED), "比试致死未转认输");
+            test.assertTrue(DEATHS.get(player) == 0, "认输产生了死亡事件");
+            assertInventory(test, player, 1, 0);
+        });
+    }
+
+    @GameTest
+    public void directVetoLeavesLivingOpponent(GameTestHelper test) {
+        withPlayer(test, player -> {
+            var mob = test.spawn(EntityTypes.ZOMBIE, SPAWN);
+            mob.addTag(DUEL);
+            mob.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.TOTEM_OF_UNDYING));
+            var result = directHit(mob, mob.damageSources().playerAttack(player));
+            test.assertTrue(result.deathPrevented() && mob.isAlive() && mob.entityTags().contains(SPARED),
+                    "直接伤害没有通知认输");
+            test.assertTrue(mob.getOffhandItem().is(Items.TOTEM_OF_UNDYING), "比试消费了图腾");
+        });
+    }
+
+    @GameTest
+    public void unclaimedLethalHitStillDrops(GameTestHelper test) {
+        withPlayer(test, player -> withInventoryRule(player, InventoryRule.DROP, () -> {
+            var attacker = test.spawn(EntityTypes.COW, SPAWN);
+            directHit(player, player.damageSources().mobAttack(attacker));
+            assertDeath(test, player);
+            assertInventory(test, player, 0, 1);
+        }));
     }
 
     @GameTest

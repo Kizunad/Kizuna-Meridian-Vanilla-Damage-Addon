@@ -16,6 +16,8 @@ import dev.kizuna.meridian.protocol.pb.HealthHostMessages.HealthHostResponse;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.ConfirmBodyDeath;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageBody;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
+import dev.kizuna.meridian.protocol.pb.HealthMessages.DeathProtection;
+import dev.kizuna.meridian.protocol.pb.HealthMessages.Healing;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.HealthResult;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.RequestEnvelope;
@@ -513,6 +515,11 @@ public final class VanillaDamageBridge {
 
         public CommitResult commitIntegrated(double damageAfterEffects, boolean bypassesDeathProtection,
                                              DamageExtras extras) {
+            return commitIntegrated(damageAfterEffects, bypassesDeathProtection, extras, Optional.empty());
+        }
+
+        public CommitResult commitIntegrated(double damageAfterEffects, boolean bypassesDeathProtection,
+                                             DamageExtras extras, Optional<DeathProtection> veto) {
             // 固定伤害上下文后询问效果附属；纯方案失败时不能预先消费黄心或图腾。
             if (committed) {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.HIT_COMMITTED);
@@ -552,12 +559,12 @@ public final class VanillaDamageBridge {
                 throw VanillaDamageErrors.hostRejected(VanillaDamageErrors.NO_INTEGRATION);
             }
             DamageIntegrationPlan plan = selected.plan();
-            CommitResult result = applyPlan(context.getDamage(), plan);
+            CommitResult result = applyPlan(context.getDamage(), plan, veto);
             var notification = DamageIntegrationCommit.newBuilder()
                     .setContext(context)
                     .setPlan(plan)
                     .setBody(result.body())
-                    .setDeathPrevented(result.deathPrevented())
+                    .setDeathPrevented(result.deathPrevented() && veto.isEmpty())
                     .build();
             selected.integration().committed(DamageIntegrationProtobuf.encodeCommit(notification));
             return result;
@@ -581,14 +588,17 @@ public final class VanillaDamageBridge {
             return selected;
         }
 
-        private CommitResult applyPlan(DamageBody original, DamageIntegrationPlan plan) {
+        private CommitResult applyPlan(DamageBody original, DamageIntegrationPlan plan,
+                                       Optional<DeathProtection> veto) {
             // 完全吸收不提交零剂量；其余情况携带保命方案一次提交完整伤害。
             double remainingDamageHp = plan.getRemainingDamageHp();
             if (remainingDamageHp == 0) {
                 return absorbedResult();
             }
             var damage = original.toBuilder().setDamageHp(remainingDamageHp);
-            if (plan.hasDeathProtection()) {
+            if (veto.isPresent()) {
+                damage.setDeathProtection(veto.get());
+            } else if (plan.hasDeathProtection()) {
                 damage.setDeathProtection(plan.getDeathProtection());
             }
             return submitDamage(damage.build());
@@ -655,6 +665,34 @@ public final class VanillaDamageBridge {
         public boolean deathPrevented() {
             // 同一固定回执同时供图腾副作用与只读伤害观察方使用。
             return health.getDeathPrevented();
+        }
+    }
+
+    /** 账户下限取自命中前的活体，保留既有损伤。只有本击本会致死时核心才应用。 */
+    public static DeathProtection survivalFloor(BodySnapshot body) {
+        final double minimumShare = 0.21;
+        var protection = DeathProtection.newBuilder().setSourceId("meridian_vanilla:spared");
+        double maximum = body.getStructure().getPartsList().stream().mapToDouble(p -> p.getMaxHp()).sum();
+        double current = body.getPartStatesList().stream().mapToDouble(p -> p.getHp()).sum();
+        double share = Math.min(1, maximum * minimumShare / current);
+        for (var part : body.getPartStatesList()) {
+            var target = HealthTarget.newBuilder().setPartId(part.getId()).build();
+            addFloor(protection, target, part.getHp() * share);
+        }
+        for (var organ : body.getOrganStatesList()) {
+            var target = HealthTarget.newBuilder().setOrganId(organ.getId()).build();
+            addFloor(protection, target, Math.min(1, organ.getHp()));
+        }
+        return protection.build();
+    }
+
+    private static void addFloor(DeathProtection.Builder protection, HealthTarget target, double hp) {
+        if (hp > 0) {
+            var floor = Healing.newBuilder()
+                    .setTarget(target)
+                    .setHp(hp)
+                    .build();
+            protection.addMinimumHp(floor);
         }
     }
 

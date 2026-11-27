@@ -454,12 +454,13 @@ public final class VanillaDamageFabric implements ModInitializer {
                 dose = hit.directDose(incoming);
             }
             OptionalDouble protectedDamageShare = protectedDamageShare(target, source, hit.body());
-            var result = hit.commitIntegrated(dose, source.is(DamageTypeTags.BYPASSES_INVULNERABILITY),
-                    attachable(target, hit, extras, protectedDamageShare));
+            var contact = new LethalHitVeto.Hit(target, attacker(source), source);
+            var resolution = commit(contact, hit, dose, attachable(target, hit, extras, protectedDamageShare));
+            var result = resolution.result();
             weapon.commitWear();
             var input = new DamageInput(kind, rawVanillaHp, dose, hit.target(), weapon.contact());
             finishDirectDamage(new DamageEvent(target, attacker(source), source, input, result), hit,
-                    protectedDamageShare);
+                    protectedDamageShare, resolution);
             defense.afterCommit(target, result.body());
             return result;
         }
@@ -487,8 +488,31 @@ public final class VanillaDamageFabric implements ModInitializer {
         return new VanillaDamageBridge.DamageExtras(extras.organShare(), protectedDamageShare, List.of());
     }
 
+    private record Resolution(VanillaDamageBridge.CommitResult result, LethalHitVeto veto,
+                              LethalHitVeto.Hit contact) {
+        void applyProtection() {
+            if (!result.deathPrevented()) {
+                return;
+            }
+            if (veto != null) {
+                veto.spared(contact);
+            } else {
+                ((TotemAccess) contact.target()).meridian$tryUseTotem(contact.source());
+            }
+        }
+    }
+
+    private static Resolution commit(LethalHitVeto.Hit contact, VanillaDamageBridge.PreparedHit hit,
+                                     double dose, VanillaDamageBridge.DamageExtras extras) {
+        boolean bypass = contact.source().is(DamageTypeTags.BYPASSES_INVULNERABILITY);
+        var veto = LethalHitVeto.Registered.first(contact);
+        var floor = Optional.ofNullable(veto).map(rule -> VanillaDamageBridge.survivalFloor(hit.body()));
+        var result = hit.commitIntegrated(dose, bypass, extras, floor);
+        return new Resolution(result, veto, contact);
+    }
+
     private static void finishDirectDamage(DamageEvent event, VanillaDamageBridge.PreparedHit hit,
-                                           OptionalDouble protectedDamageShare) {
+                                           OptionalDouble protectedDamageShare, Resolution resolution) {
         // 击杀归属和观察者只在提交成功后记录；原版死亡、图腾沿已有同步路径执行。
         LivingEntity target = event.target();
         LivingEntity attacker = event.attacker();
@@ -504,9 +528,7 @@ public final class VanillaDamageFabric implements ModInitializer {
         float amount = (float) dose;
         target.getCombatTracker().recordDamage(source, amount);
         notifyDamageObservers(event);
-        if (event.result().deathPrevented()) {
-            ((TotemAccess) target).meridian$tryUseTotem(source);
-        }
+        resolution.applyProtection();
         if (event.bodyDead()) {
             // 直接伤害没有外层 hurtServer 负责死亡检查，沿用同一伤害来源和死亡事件。
             if (ServerLivingEntityEvents.ALLOW_DEATH.invoker().allowDeath(target, source, amount)) {
@@ -959,8 +981,9 @@ public final class VanillaDamageFabric implements ModInitializer {
             DamageFrame frame = frames.peek();
             var damageExtras = new VanillaDamageBridge.DamageExtras(OptionalDouble.empty(),
                     frame.protectedDamageShare, List.of());
-            var result = frame.hit.commitIntegrated(damageAfterEffects,
-                    source.is(DamageTypeTags.BYPASSES_INVULNERABILITY), damageExtras);
+            var contact = new LethalHitVeto.Hit(entity, attacker(source), source);
+            var resolution = commit(contact, frame.hit, damageAfterEffects, damageExtras);
+            var result = resolution.result();
             frame.completed = true;
             var body = result.body();
             boolean bodyDead = body.getVitality().getDead();
@@ -977,10 +1000,7 @@ public final class VanillaDamageFabric implements ModInitializer {
             if (!bodyDead) {
                 stagger(entity, frame.hit.staggerMillis(damageAfterEffects, frame.protectedDamageShare));
             }
-            if (result.deathPrevented()) {
-                // 身体尚未死亡及清账；随后复用原版扣物品、统计、音画与效果授予流程。
-                ((TotemAccess) entity).meridian$tryUseTotem(source);
-            }
+            resolution.applyProtection();
             if (bodyDead) {
                 // 等原版伤害调用结束后再同步死亡，避免在 actuallyHurt 中途重入 die。
                 pendingDeaths.put(entity, source);
