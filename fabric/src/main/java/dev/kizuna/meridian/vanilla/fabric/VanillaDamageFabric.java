@@ -537,7 +537,8 @@ public final class VanillaDamageFabric implements ModInitializer {
             // 已绑定实体的 setter 会投影回调结束时的权威身体，包括监听器处理过的保命。
             target.setHealth(0);
         } else {
-            stagger(target, hit.staggerMillis(dose, protectedDamageShare));
+            stagger(target, hit.staggerMillis(dose, protectedDamageShare), dose, source,
+                    protectedDamageShare);
         }
     }
 
@@ -593,6 +594,11 @@ public final class VanillaDamageFabric implements ModInitializer {
             throw new IllegalStateException(VanillaDamageErrors.NOT_INITIALIZED);
         }
         return preferences;
+    }
+
+    static void logExternalStagger(LivingEntity target, long millis, String source) {
+        LOGGER.debug("stagger target={} attacker=none millis={} dose=none ratio=none source={} protectedShare=none",
+                target.getStringUUID(), millis, source);
     }
 
     public static synchronized void registerTemplateDefaults(String template, String bundledSource) {
@@ -998,7 +1004,8 @@ public final class VanillaDamageFabric implements ModInitializer {
             notifyDamageObservers(new DamageEvent(entity, attacker(source), source, input, result));
             frame.defense.afterCommit(entity, body);
             if (!bodyDead) {
-                stagger(entity, frame.hit.staggerMillis(damageAfterEffects, frame.protectedDamageShare));
+                stagger(entity, frame.hit.staggerMillis(damageAfterEffects, frame.protectedDamageShare),
+                        damageAfterEffects, frame.source, frame.protectedDamageShare);
             }
             resolution.applyProtection();
             if (bodyDead) {
@@ -1013,8 +1020,16 @@ public final class VanillaDamageFabric implements ModInitializer {
         }
     }
 
-    private static void stagger(LivingEntity entity, long millis) {
+    private static void stagger(LivingEntity entity, long millis, double damageAfterEffects,
+                                DamageSource source, OptionalDouble protectedDamageShare) {
         // 玩家与类人走同一功法入口；是否打断起手由功法库按施放阶段和可打断标志判定。
+        Entity attacker = source.getEntity();
+        String attackerId = attacker == null ? "none" : attacker.getStringUUID();
+        double damageRatio = damageAfterEffects / Math.max(1, entity.getMaxHealth());
+        LOGGER.debug("stagger target={} attacker={} millis={} dose={} ratio={} source={} protectedShare={}",
+                entity.getStringUUID(), attackerId, millis, damageAfterEffects, damageRatio,
+                source.getMsgId(), protectedDamageShare.isPresent()
+                        ? protectedDamageShare.getAsDouble() : "none");
         if (millis == 0) {
             return;
         }

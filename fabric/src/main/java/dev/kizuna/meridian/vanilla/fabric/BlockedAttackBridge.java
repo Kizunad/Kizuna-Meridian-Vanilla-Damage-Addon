@@ -1,6 +1,7 @@
 package dev.kizuna.meridian.vanilla.fabric;
 
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueHitFeel;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.BlockedAttackSource;
 import dev.kizuna.meridian.technique.server.TechniqueHost;
 import dev.kizuna.meridian.technique.server.TechniqueService;
@@ -33,7 +34,8 @@ public final class BlockedAttackBridge {
     }
 
     public record BlockedAttackEvent(LivingEntity target, LivingEntity attacker,
-                                     BlockedAttackSource source, String eventId, long blockedMillis) {
+                                     DamageSource damage, BlockedAttackSource source,
+                                     String eventId, long blockedMillis) {
     }
 
     public static void registerObserver(Consumer<BlockedAttackEvent> observer) {
@@ -54,7 +56,7 @@ public final class BlockedAttackBridge {
                 event.attacker() == null ? "none" : event.attacker().getStringUUID(),
                 event.input().guarded().isPresent(), event.input().damageAfterEffects());
         if (event.input().guarded().isPresent()) {
-            submit(event.target(), event.attacker(), BlockedAttackSource.GUARD);
+            submit(event.target(), event.attacker(), event.source(), BlockedAttackSource.GUARD, eventId());
         }
     }
 
@@ -65,7 +67,7 @@ public final class BlockedAttackBridge {
         } else {
             resolvedAttacker = attacker(source);
         }
-        return submit(target, resolvedAttacker, BlockedAttackSource.SHIELD);
+        return submit(target, resolvedAttacker, source, BlockedAttackSource.SHIELD, eventId());
     }
 
     static boolean isVanillaShield(LivingEntity target) {
@@ -82,15 +84,15 @@ public final class BlockedAttackBridge {
         if (hit.getType() != HitResult.Type.BLOCK) {
             return false;
         }
-        return submit(null, attacker, BlockedAttackSource.HARD_OBJECT);
+        return submit(null, attacker, null, BlockedAttackSource.HARD_OBJECT, eventId());
     }
 
     private static boolean submit(LivingEntity target, LivingEntity attacker, BlockedAttackSource source) {
-        return submit(target, attacker, source, eventId());
+        return submit(target, attacker, null, source, eventId());
     }
 
     private static boolean submit(LivingEntity target, LivingEntity attacker,
-                                  BlockedAttackSource source, String eventId) {
+                                  DamageSource damage, BlockedAttackSource source, String eventId) {
         LOGGER.info("submit source={} target={} attacker={}", source,
                 target == null ? "none" : target.getStringUUID(),
                 attacker == null ? "none" : attacker.getStringUUID());
@@ -106,7 +108,7 @@ public final class BlockedAttackBridge {
                 return TechniqueFabric.service().recordBlockedAttack(fallback);
             }
             BlockedAttackEvent event = new BlockedAttackEvent(
-                    target, attacker, source, eventId, blockedMillis.orElseThrow());
+                    target, attacker, damage, source, eventId, blockedMillis.orElseThrow());
             publish(event);
             TechniqueService.BlockedAttackObservation observation = new TechniqueService.BlockedAttackObservation(
                     attacker.getUUID(), event.eventId(), event.source(), event.blockedMillis());
@@ -137,6 +139,9 @@ public final class BlockedAttackBridge {
     }
 
     private static void publish(BlockedAttackEvent event) {
+        if (event.target() != null && event.attacker() != null) {
+            TechniqueHitFeel.blocked(event.target(), event.attacker(), event.damage(), event.source());
+        }
         for (Consumer<BlockedAttackEvent> observer : OBSERVERS) {
             try {
                 observer.accept(event);

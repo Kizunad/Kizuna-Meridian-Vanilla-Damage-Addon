@@ -31,6 +31,7 @@ final class VanillaBoundArm implements TechniqueWeaponBinds.ArmHost {
     @Override
     public void stagger(LivingEntity caster, long millis) {
         // 踉跄复用原版伤害附属的受击减速和禁出招时钟。
+        VanillaDamageFabric.logExternalStagger(caster, millis, "weapon_bind");
         double movement = VanillaDamageFabric.preferences().stagger().movementMultiplier();
         var stumble = new TechniqueService.Stagger(millis, movement, TechniqueService.StaggerKind.HIT);
         TechniqueFabric.service().stagger(caster.getUUID(), stumble);
